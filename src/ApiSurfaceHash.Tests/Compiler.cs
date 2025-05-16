@@ -7,6 +7,7 @@ public sealed class RoslynCompiler
 {
   public bool EnableOptimizations { get; init; }
   public string AssemblyName { get; init; } = "Assembly42";
+  public bool Deterministic { get; init; } = true;
 
   public Span<byte> Compile(string sourceCode)
   {
@@ -15,6 +16,7 @@ public sealed class RoslynCompiler
     var compilationOptions = new CSharpCompilationOptions(
       OutputKind.DynamicallyLinkedLibrary,
       optimizationLevel: EnableOptimizations ? OptimizationLevel.Release : OptimizationLevel.Debug,
+      deterministic: Deterministic,
       allowUnsafe: true,
       nullableContextOptions: NullableContextOptions.Enable);
 
