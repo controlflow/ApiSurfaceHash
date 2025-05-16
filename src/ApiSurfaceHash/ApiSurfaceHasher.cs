@@ -189,24 +189,46 @@ public class ApiSurfaceHasher
       return mySurfaceHasher.GetOrComputeTypeReferenceHash(handle);
     }
 
+    public ulong GetGenericInstantiation(ulong genericTypeHash, ImmutableArray<ulong> typeArgumentsHashes)
+    {
+      return LongHashCode.Combine(genericTypeHash, LongHashCode.Combine(typeArgumentsHashes));
+    }
+
     public ulong GetSZArrayType(ulong elementTypeHash) => LongHashCode.Combine(elementTypeHash, 1);
     public ulong GetByReferenceType(ulong elementTypeHash) => LongHashCode.Combine(elementTypeHash, 2);
     public ulong GetPointerType(ulong elementTypeHash) => LongHashCode.Combine(elementTypeHash, 3);
     public ulong GetPinnedType(ulong elementTypeHash) => LongHashCode.Combine(elementTypeHash, 4);
 
-    public ulong GetGenericInstantiation(ulong genericType, ImmutableArray<ulong> typeArguments)
+    public ulong GetArrayType(ulong elementTypeHash, ArrayShape shape)
     {
-      throw new NotImplementedException();
-    }
+      return LongHashCode.Combine(
+        elementTypeHash,
+        (ulong)shape.Rank,
+        HashCombine(shape.LowerBounds),
+        HashCombine(shape.Sizes));
 
-    public ulong GetArrayType(ulong elementType, ArrayShape shape)
-    {
-      throw new NotImplementedException();
+      ulong HashCombine(ImmutableArray<int> values)
+      {
+        var hash = LongHashCode.FnvOffset;
+
+        foreach (var value in values)
+        {
+          hash = LongHashCode.Combine(hash, (ulong)value);
+        }
+
+        return hash;
+      }
     }
 
     public ulong GetFunctionPointerType(MethodSignature<ulong> signature)
     {
-      throw new NotImplementedException();
+      var returnTypeHash = signature.ReturnType;
+      var parameterTypesHash = LongHashCode.Combine(signature.ParameterTypes);
+      var genericParametersCountHash = (ulong)signature.GenericParameterCount;
+      var callingConventionHash = (ulong)signature.Header.CallingConvention;
+
+      return LongHashCode.Combine(
+        returnTypeHash, parameterTypesHash, genericParametersCountHash, callingConventionHash);
     }
 
     public ulong GetGenericMethodParameter(object? genericContext, int index)
@@ -302,24 +324,30 @@ public class ApiSurfaceHasher
     {
       var parameter = myMetadataReader.GetParameter(parameterHandle);
 
-      const ParameterAttributes apiSurfaceAttributes =
-        ParameterAttributes.In | ParameterAttributes.Out | ParameterAttributes.HasDefault;
+      const ParameterAttributes parameterApiSurfaceAttributesMask
+        = ParameterAttributes.In
+          | ParameterAttributes.Out
+          | ParameterAttributes.Optional
+          | ParameterAttributes.HasDefault
+          | ParameterAttributes.Retval;
 
-      var surfaceAttributesHash = (ulong)(parameter.Attributes & apiSurfaceAttributes);
+      var parameterAttributesHash = (ulong)(parameter.Attributes & parameterApiSurfaceAttributesMask);
 
       var parameterNameHash = GetOrComputeStringHash(parameter.Name);
-      var parameterAttributesHash = GetCustomAttributesHash(parameter.GetCustomAttributes());
+      var parameterCustomAttributesHash = GetCustomAttributesHash(parameter.GetCustomAttributes());
       var optionalParameterValueHash = GetOrComputeConstantValueHash(parameter.GetDefaultValue());
 
       parametersHash = LongHashCode.Combine(
         parametersHash, LongHashCode.Combine(
-          parameterNameHash, surfaceAttributesHash, parameterAttributesHash, optionalParameterValueHash));
+          parameterNameHash, parameterAttributesHash, parameterCustomAttributesHash, optionalParameterValueHash));
     }
 
     var parameterTypesHash = LongHashCode.Combine(decodedSignature.ParameterTypes);
+    var combinedSignatureHash = LongHashCode.Combine(nameHash, parameterTypesHash, decodedSignature.ReturnType);
 
-    return LongHashCode.Combine(
-      nameHash, parametersHash, parameterTypesHash, decodedSignature.ReturnType);
+    var customAttributesHash = GetCustomAttributesHash(methodDefinition.GetCustomAttributes());
+
+    return LongHashCode.Combine(combinedSignatureHash, parametersHash, customAttributesHash);
   }
 
   [Pure] // todo: incomplete

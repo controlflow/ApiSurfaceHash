@@ -50,15 +50,37 @@ public class BasicTests
     AssertMemberSurfaceNotEqual("public void M(object x) { }", "public void M(string x) { }");
     AssertMemberSurfaceNotEqual("public void M(float x) { }", "public void M(decimal x) { }"); // type ref
     AssertMemberSurfaceNotEqual("public void M(object x) { }", "public void M(C x) { }"); // type def
+    AssertMemberSurfaceNotEqual("public void M(int? x) { }", "public void M(bool? x) { }"); // type spec
     AssertMemberSurfaceNotEqual("public object M() => null;", "public object[] M() => null;");
+    AssertMemberSurfaceNotEqual("public object[] M() => null;", "public object[,] M() => null;");
+    AssertMemberSurfaceNotEqual("public object[,] M() => null;", "public object[,,] M() => null;");
     AssertMemberSurfaceNotEqual("public unsafe void M(int x) { }", "public unsafe void M(int* x) { }");
     AssertMemberSurfaceNotEqual("public unsafe void M(int* x) { }", "public unsafe void M(int** x) { }");
     AssertMemberSurfaceNotEqual("public unsafe void M(int* x) { }", "public unsafe void M(ref int x) { }");
+    AssertMemberSurfaceNotEqual(
+      "public unsafe void M(delegate*<int> ptr) { }",
+      "public unsafe void M(delegate*<uint> ptr) { }");
+    AssertMemberSurfaceNotEqual(
+      "public unsafe void M(delegate*<bool,int> ptr) { }",
+      "public unsafe void M(delegate*<uint,int> ptr) { }");
+    AssertMemberSurfaceNotEqual(
+      "public unsafe void M(delegate*<uint,int> ptr) { }",
+      "public unsafe void M(delegate*<uint,uint,int> ptr) { }");
+    AssertMemberSurfaceNotEqual(
+      "public unsafe void M(delegate*<int> ptr) { }",
+      "public unsafe void M(delegate* unmanaged<int> ptr) { }");
+    AssertMemberSurfaceNotEqual(
+      "public unsafe void M(delegate* unmanaged<int> ptr) { }",
+      "public unsafe void M(delegate* unmanaged[Cdecl]<int> ptr) { }");
+    AssertMemberSurfaceNotEqual(
+      "public unsafe void M(delegate* managed<int> ptr) { }",
+      "public unsafe void M(delegate* unmanaged<int> ptr) { }");
     AssertMemberSurfaceNotEqual("public void M() { }", "public int M() { return 1; }");
     AssertMemberSurfaceEqual("private void M(int x) { }", "private void M(bool x) { }");
 
     // parameter changes
     AssertMemberSurfaceNotEqual("public void M(int x) { }", "public void M(int y) { }"); // name change
+    AssertMemberSurfaceNotEqual("public void M(int x) { }", "public void M(ref int x) { }");
     AssertMemberSurfaceNotEqual("public void M(ref int x) { }", "public void M(out int x) { x = 0; }"); // ref-out
     AssertMemberSurfaceNotEqual("public void M(ref int x) { }", "public void M(in int x) { }"); // ref-in
     AssertMemberSurfaceNotEqual("public void M(ref int x) { }", "public void M(ref readonly int x) { }"); // ref-ref readonly
@@ -66,6 +88,11 @@ public class BasicTests
     AssertMemberSurfaceNotEqual("public void M(int x) { }", "public void M(int x = 0) { }"); // optional or not
     AssertMemberSurfaceEqual("public void M(int x = 0) { }", "public void M(int x = 1 - 1) { }");
     AssertMemberSurfaceNotEqual("public void M(int x = 0) { }", "public void M(int x = 1) { }"); // optional change
+    AssertMemberSurfaceNotEqual("public void M(string s = null) { }", "public void M(string s = \"\") { }"); // optional change
+    //AssertMemberSurfaceNotEqual("public void M(int? x = null) { }", "public void M(int? x = new int()) { }");
+    AssertNotEqualSurface(
+      "public static class E { public static void Extension(string s) { } }",
+      "public static class E { public static void Extension(this string s) { } }");
   }
 
   private void AssertEqualSurface(params IReadOnlyList<string> sourceCodes)
