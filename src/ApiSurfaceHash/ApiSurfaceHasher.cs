@@ -1,7 +1,9 @@
-﻿using System.Diagnostics.Contracts;
+﻿using System.Collections.Immutable;
+using System.Diagnostics.Contracts;
 using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using ApiSurfaceHash;
 
 // todo: internalsvisibleto
 //[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Foo")]
@@ -15,6 +17,7 @@ using System.Reflection.PortableExecutable;
 public class ApiSurfaceHasher
 {
   private readonly MetadataReader myMetadataReader;
+  private readonly SignatureHasher mySignatureHasher;
   private readonly Dictionary<StringHandle, ulong> myStringHashes = new();
   // todo: split to increase locality?
   private readonly Dictionary<EntityHandle, ulong> myHashes = new();
@@ -27,6 +30,7 @@ public class ApiSurfaceHasher
   private ApiSurfaceHasher(MetadataReader metadataReader)
   {
     myMetadataReader = metadataReader;
+    mySignatureHasher = new SignatureHasher(this);
   }
 
   [Pure]
@@ -67,6 +71,7 @@ public class ApiSurfaceHasher
     return hash;
   }
 
+  // todo: similar method for type def "references" in attributes
   [Pure]
   private ulong GetOrComputeTypeReferenceHash(TypeReferenceHandle handle)
   {
@@ -108,6 +113,141 @@ public class ApiSurfaceHasher
     return myHashes[handle] = hash;
   }
 
+  [Pure]
+  private ulong GetOrComputeMemberReferenceHash(MemberReferenceHandle handle)
+  {
+    if (myHashes.TryGetValue(handle, out var hash)) return hash;
+
+    var memberReference = myMetadataReader.GetMemberReference(handle);
+
+    var nameHash = GetOrComputeStringHash(memberReference.Name);
+
+    switch (memberReference.GetKind())
+    {
+      case MemberReferenceKind.Method:
+      {
+        var methodSignature = memberReference.DecodeMethodSignature(mySignatureHasher, genericContext: null);
+
+        var signatureHeader = methodSignature.Header;
+        
+
+        break;
+      }
+
+      case MemberReferenceKind.Field:
+        break;
+
+      default:
+        throw new BadImageFormatException();
+    }
+
+    
+
+    return myHashes[handle] = hash;
+  }
+
+  private ulong GetCustomAttributeHash(CustomAttribute customAttribute)
+  {
+    if (customAttribute.Constructor.Kind == HandleKind.MemberReference)
+    {
+      var constructorReference = myMetadataReader.GetMemberReference(
+        (MemberReferenceHandle)customAttribute.Constructor);
+
+      // todo: hash signature
+      //constructorReference.Parent
+
+      // referenced type
+    }
+    else if (customAttribute.Constructor.Kind == HandleKind.MethodDefinition)
+    {
+      // type def
+    }
+
+    return 0;
+  }
+
+  //
+  private sealed class SignatureHasher : ISignatureTypeProvider<ulong, object?>
+  {
+    private readonly ApiSurfaceHasher mySurfaceHasher;
+
+    public SignatureHasher(ApiSurfaceHasher surfaceHasher)
+    {
+      mySurfaceHasher = surfaceHasher;
+    }
+
+    public ulong GetPrimitiveType(PrimitiveTypeCode typeCode)
+    {
+      return (ulong)typeCode;
+    }
+
+    public ulong GetTypeFromDefinition(MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind)
+    {
+      throw new NotImplementedException();
+    }
+
+    public ulong GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind)
+    {
+      throw new NotImplementedException();
+    }
+
+    public ulong GetSZArrayType(ulong elementType)
+    {
+      throw new NotImplementedException();
+    }
+
+    public ulong GetGenericInstantiation(ulong genericType, ImmutableArray<ulong> typeArguments)
+    {
+      throw new NotImplementedException();
+    }
+
+    public ulong GetArrayType(ulong elementType, ArrayShape shape)
+    {
+      throw new NotImplementedException();
+    }
+
+    public ulong GetByReferenceType(ulong elementType)
+    {
+      throw new NotImplementedException();
+    }
+
+    public ulong GetPointerType(ulong elementType)
+    {
+      throw new NotImplementedException();
+    }
+
+    public ulong GetFunctionPointerType(MethodSignature<ulong> signature)
+    {
+      throw new NotImplementedException();
+    }
+
+    public ulong GetGenericMethodParameter(object? genericContext, int index)
+    {
+      throw new NotImplementedException();
+    }
+
+    public ulong GetGenericTypeParameter(object? genericContext, int index)
+    {
+      throw new NotImplementedException();
+    }
+
+    public ulong GetModifiedType(ulong modifier, ulong unmodifiedType, bool isRequired)
+    {
+      throw new NotImplementedException();
+    }
+
+    public ulong GetPinnedType(ulong elementType)
+    {
+      throw new NotImplementedException();
+    }
+
+    public ulong GetTypeFromSpecification(MetadataReader reader, object? genericContext, TypeSpecificationHandle handle,
+      byte rawTypeKind)
+    {
+      throw new NotImplementedException();
+    }
+  }
+
   // todo: nested types
   // todo: generic type parameters
   [Pure]
@@ -125,7 +265,40 @@ public class ApiSurfaceHasher
 
     var attributesHash = (ulong)(typeDefinition.Attributes & apiSurfaceAttributes);
 
-    return LongHashCode.Combine(namespaceHash, nameHash, attributesHash);
+    var methodHashes = new List<ulong>();
+
+    foreach (var methodDefinitionHandle in typeDefinition.GetMethods())
+    {
+      var methodDefinition = myMetadataReader.GetMethodDefinition(methodDefinitionHandle);
+
+      if ((methodDefinition.Attributes & MethodAttributes.Public) == MethodAttributes.Public)
+      {
+        var methodDefinitionHash = GetMethodDefinitionHash(methodDefinition);
+        methodHashes.Add(methodDefinitionHash);
+      }
+    }
+
+    // todo: test
+    //methodHashes.Sort();
+
+    var fqnHash = LongHashCode.Combine(namespaceHash, nameHash, attributesHash);
+    var methodsHash = LongHashCode.Combine(methodHashes);
+
+    return LongHashCode.Combine(fqnHash, methodsHash);
+  }
+
+  [Pure]
+  private ulong GetMethodDefinitionHash(MethodDefinition methodDefinition)
+  {
+    // todo: attrs, header
+    var attributes = methodDefinition.Attributes;
+
+    var nameHash = GetOrComputeStringHash(methodDefinition.Name);
+
+    var signature = methodDefinition.DecodeSignature(mySignatureHasher, null);
+
+    var parametersHash = LongHashCode.Combine(signature.ParameterTypes);
+    return LongHashCode.Combine(nameHash, parametersHash, signature.ReturnType);
   }
 
   public static unsafe ulong Execute(byte* imagePtr, int imageLength)
@@ -136,13 +309,11 @@ public class ApiSurfaceHasher
 
     var surfaceHasher = new ApiSurfaceHasher(metadataReader);
 
-    // 1. assembly attributes
-    // 2. module attributes
+    // 1. hash assembly attributes and check [assembly: InternalsVisibleTo] presence
+    // 2. hash module attributes
+    // 3. hash types
+    // 4. hash embedded resources
 
-    // foreach (var metadataReaderAssemblyReference in metadataReader.AssemblyReferences)
-    // {
-    //   var hash = surfaceHasher.GetAssemblyReferenceHash(metadataReaderAssemblyReference);
-    // }
 
     var typeHashes = new List<ulong>(); // todo: sort hashes
 
@@ -175,6 +346,17 @@ public class ApiSurfaceHasher
         //
       }
     }
+    
+    foreach (var manifestResourceHandle in metadataReader.ManifestResources)
+    {
+      var manifestResource = metadataReader.GetManifestResource(manifestResourceHandle);
+      if ((manifestResource.Attributes & ManifestResourceAttributes.Public) != 0)
+      {
+        // manifestResource.Name; - match
+      }
+    }
+
+    typeHashes.Sort();
 
     return LongHashCode.Combine(typeHashes);
   }
@@ -185,77 +367,5 @@ public class ApiSurfaceHasher
     {
       return Execute(ptr, assemblyBytes.Length);
     }
-  }
-}
-
-file static class LongHashCode
-{
-  public const ulong FnvOffset = 14695981039346656037UL;
-  public const ulong FnvPrime = 1099511628211UL;
-
-  public static unsafe ulong FromUtf8String(ReadOnlySpan<byte> utf8Bytes)
-  {
-    if (utf8Bytes.Length == 0) return FnvOffset;
-
-    fixed (byte* ptr = &utf8Bytes[0])
-    {
-      return FromBlob(ptr, utf8Bytes.Length);
-    }
-  }
-
-  [Pure]
-  public static unsafe ulong FromBlob(BlobReader blobReader)
-  {
-    return FromBlob(blobReader.CurrentPointer, blobReader.Length);
-  }
-
-  [Pure]
-  public static unsafe ulong FromBlob(byte* bytePtr, int length)
-  {
-    unchecked
-    {
-      var hash = FnvOffset;
-
-      for (var index = 0; index < length; index++)
-      {
-        hash = hash * FnvPrime + bytePtr[index];
-      }
-
-      return hash;
-    }
-  }
-
-  [Pure]
-  public static ulong Combine(List<ulong> hashes)
-  {
-    unchecked
-    {
-      var hash = FnvOffset;
-
-      foreach (var itemHash in hashes)
-      {
-        hash = hash * FnvPrime + itemHash;
-      }
-
-      return hash;
-    }
-  }
-
-  [Pure]
-  public static ulong Combine(ulong a, ulong b)
-  {
-    return unchecked(a * FnvPrime + b);
-  }
-
-  [Pure]
-  public static ulong Combine(ulong a, ulong b, ulong c)
-  {
-    return unchecked((a * FnvPrime + b) * FnvPrime + c);
-  }
-
-  [Pure]
-  public static ulong Combine(ulong a, ulong b, ulong c, ulong d)
-  {
-    return unchecked(((a * FnvPrime + b) * FnvPrime + c) * FnvPrime + d);
   }
 }
