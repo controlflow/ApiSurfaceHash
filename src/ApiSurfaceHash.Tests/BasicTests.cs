@@ -36,6 +36,7 @@ public class BasicTests
   public void TestSignatures01()
   {
     AssertMemberSurfaceEqual("public void M() { _ = 1; }", "public void M() { _ = 2; }");
+    AssertMemberSurfaceEqual("public void M() { } public void F() { }", "public void F() { } public void M() { }");
 
     // types change
     AssertMemberSurfaceNotEqual("public void M() { }", "public void M(int x) { }");
@@ -63,6 +64,8 @@ public class BasicTests
     AssertMemberSurfaceNotEqual("public void M(ref int x) { }", "public void M(ref readonly int x) { }"); // ref-ref readonly
     AssertMemberSurfaceNotEqual("public void M(in int x) { }", "public void M(ref readonly int x) { }"); // in-ref readonly (attr change)
     AssertMemberSurfaceNotEqual("public void M(int x) { }", "public void M(int x = 0) { }"); // optional or not
+    AssertMemberSurfaceEqual("public void M(int x = 0) { }", "public void M(int x = 1 - 1) { }");
+    AssertMemberSurfaceNotEqual("public void M(int x = 0) { }", "public void M(int x = 1) { }"); // optional change
   }
 
   private void AssertEqualSurface(params IReadOnlyList<string> sourceCodes)

@@ -15,6 +15,7 @@ using ApiSurfaceHash;
 // todo: top-level code <Main>$ - ignore types/members starting from '<'
 // todo: init-only accessors breaking change
 // todo: required members breaking change (count of members changed)
+// todo: constant value change can affect compilation
 
 public class ApiSurfaceHasher
 {
@@ -163,26 +164,6 @@ public class ApiSurfaceHasher
     return myHashes[handle] = hash;
   }
 
-  private ulong GetCustomAttributeHash(CustomAttribute customAttribute)
-  {
-    if (customAttribute.Constructor.Kind == HandleKind.MemberReference)
-    {
-      var constructorReference = myMetadataReader.GetMemberReference(
-        (MemberReferenceHandle)customAttribute.Constructor);
-
-      // todo: hash signature
-      //constructorReference.Parent
-
-      // referenced type
-    }
-    else if (customAttribute.Constructor.Kind == HandleKind.MethodDefinition)
-    {
-      // type def
-    }
-
-    return 0;
-  }
-
   // todo: replace with non-allocating
   private sealed class SignatureHasher : ISignatureTypeProvider<ulong, object?>
   {
@@ -253,7 +234,7 @@ public class ApiSurfaceHasher
   // todo: nested types
   // todo: generic type parameters
   [Pure]
-  private ulong GetTypeDefinitionHash(TypeDefinition typeDefinition)
+  private ulong GetTypeDefinitionSurfaceHash(TypeDefinition typeDefinition)
   {
     var namespaceHash = GetOrComputeStringHash(typeDefinition.Namespace);
     var nameHash = GetOrComputeStringHash(typeDefinition.Name);
@@ -275,13 +256,12 @@ public class ApiSurfaceHasher
 
       if ((methodDefinition.Attributes & MethodAttributes.Public) == MethodAttributes.Public)
       {
-        var methodDefinitionHash = GetMethodDefinitionHash(methodDefinition);
+        var methodDefinitionHash = GetMethodDefinitionSurfaceHash(methodDefinition);
         methodHashes.Add(methodDefinitionHash);
       }
     }
 
-    // todo: test
-    //methodHashes.Sort();
+    methodHashes.Sort();
 
     var fqnHash = LongHashCode.Combine(namespaceHash, nameHash, attributesHash);
     var methodsHash = LongHashCode.Combine(methodHashes);
@@ -289,14 +269,32 @@ public class ApiSurfaceHasher
     return LongHashCode.Combine(fqnHash, methodsHash);
   }
 
+  private ulong GetOrComputeConstantValueHash(ConstantHandle handle)
+  {
+    if (handle.IsNil)
+      return LongHashCode.FnvOffset;
+
+    if (myHashes.TryGetValue(handle, out var hash)) return hash;
+
+    var constant = myMetadataReader.GetConstant(handle);
+
+    var constantTypeHash = (ulong)constant.TypeCode;
+    var constantValueBlobHash = LongHashCode.FromBlob(myMetadataReader.GetBlobReader(constant.Value));
+
+    hash = LongHashCode.Combine(constantTypeHash, constantValueBlobHash);
+
+    return myHashes[handle] = hash;
+  }
+
   [Pure]
-  private ulong GetMethodDefinitionHash(MethodDefinition methodDefinition)
+  private ulong GetMethodDefinitionSurfaceHash(MethodDefinition methodDefinition)
   {
     // todo: attrs, header
     var attributes = methodDefinition.Attributes;
 
     var nameHash = GetOrComputeStringHash(methodDefinition.Name);
 
+    // todo: avoid materialization in the future
     var decodedSignature = methodDefinition.DecodeSignature(mySignatureHasher, genericContext: null);
 
     var parametersHash = LongHashCode.FnvOffset;
@@ -305,20 +303,71 @@ public class ApiSurfaceHasher
       var parameter = myMetadataReader.GetParameter(parameterHandle);
 
       const ParameterAttributes apiSurfaceAttributes =
-        ParameterAttributes.In
-        | ParameterAttributes.Out
-        | ParameterAttributes.HasDefault;
+        ParameterAttributes.In | ParameterAttributes.Out | ParameterAttributes.HasDefault;
 
       var surfaceAttributesHash = (ulong)(parameter.Attributes & apiSurfaceAttributes);
 
       var parameterNameHash = GetOrComputeStringHash(parameter.Name);
-      parametersHash = LongHashCode.Combine(parametersHash, parameterNameHash, surfaceAttributesHash);
+      var parameterAttributesHash = GetCustomAttributesHash(parameter.GetCustomAttributes());
+      var optionalParameterValueHash = GetOrComputeConstantValueHash(parameter.GetDefaultValue());
+
+      parametersHash = LongHashCode.Combine(
+        parametersHash, LongHashCode.Combine(
+          parameterNameHash, surfaceAttributesHash, parameterAttributesHash, optionalParameterValueHash));
     }
 
     var parameterTypesHash = LongHashCode.Combine(decodedSignature.ParameterTypes);
 
     return LongHashCode.Combine(
       nameHash, parametersHash, parameterTypesHash, decodedSignature.ReturnType);
+  }
+
+  [Pure] // todo: incomplete
+  private ulong GetCustomAttributesHash(CustomAttributeHandleCollection customAttributes)
+  {
+    var hash = LongHashCode.FnvOffset;
+
+    foreach (var customAttributeHandle in customAttributes)
+    {
+      var customAttribute = myMetadataReader.GetCustomAttribute(customAttributeHandle);
+
+      // todo: include ctor signature
+
+      switch (customAttribute.Constructor.Kind)
+      {
+        case HandleKind.MemberReference:
+        {
+          var memberReference = myMetadataReader.GetMemberReference((MemberReferenceHandle)customAttribute.Constructor);
+
+          if (memberReference.Parent.Kind == HandleKind.TypeReference)
+          {
+            var typeReferenceHandle = (TypeReferenceHandle)memberReference.Parent;
+            var typeReferenceHash = GetOrComputeTypeReferenceHash(typeReferenceHandle);
+
+            hash = LongHashCode.Combine(hash, typeReferenceHash);
+          }
+          else
+          {
+            // ?
+          }
+
+          break;
+        }
+
+        case HandleKind.MethodDefinition:
+        {
+          var methodDefinition = myMetadataReader.GetMethodDefinition((MethodDefinitionHandle)customAttribute.Constructor);
+
+          var typeDefinitionHandle = methodDefinition.GetDeclaringType();
+          var typeDefinitionHash = GetOrComputeTypeDefinitionUsageHash(typeDefinitionHandle);
+
+          hash = LongHashCode.Combine(hash, typeDefinitionHash);
+          break;
+        }
+      }
+    }
+
+    return hash;
   }
 
   public static unsafe ulong Execute(byte* imagePtr, int imageLength)
@@ -341,12 +390,12 @@ public class ApiSurfaceHasher
     {
       var typeDefinition = metadataReader.GetTypeDefinition(typeDefinitionHandle);
 
-      var ns = metadataReader.GetString(typeDefinition.Namespace);
-      var fqn = (ns.Length == 0 ? "" : ns + ".") + metadataReader.GetString(typeDefinition.Name);
+      //var ns = metadataReader.GetString(typeDefinition.Namespace);
+      //var fqn = (ns.Length == 0 ? "" : ns + ".") + metadataReader.GetString(typeDefinition.Name);
 
       if ((typeDefinition.Attributes & TypeAttributes.Public) != 0)
       {
-        typeHashes.Add(surfaceHasher.GetTypeDefinitionHash(typeDefinition));
+        typeHashes.Add(surfaceHasher.GetTypeDefinitionSurfaceHash(typeDefinition));
       }
       else
       {
