@@ -34,7 +34,7 @@ internal static class LongHashCode
 
       for (var index = 0; index < length; index++)
       {
-        hash = hash * FnvPrime + bytePtr[index];
+        hash = hash * FnvPrime ^ bytePtr[index];
       }
 
       return hash;
@@ -50,7 +50,7 @@ internal static class LongHashCode
 
       foreach (var itemHash in hashes)
       {
-        hash = hash * FnvPrime + itemHash;
+        hash = hash * FnvPrime ^ itemHash;
       }
 
       return hash;
@@ -66,7 +66,7 @@ internal static class LongHashCode
 
       foreach (var itemHash in hashes)
       {
-        hash = hash * FnvPrime + itemHash;
+        hash = hash * FnvPrime ^ itemHash;
       }
 
       return hash;
@@ -76,18 +76,18 @@ internal static class LongHashCode
   [Pure]
   public static ulong Combine(ulong a, ulong b)
   {
-    return unchecked(a * FnvPrime + b);
+    return unchecked(a * FnvPrime ^ b);
   }
 
   [Pure]
   public static ulong Combine(ulong a, ulong b, ulong c)
   {
-    return unchecked((a * FnvPrime + b) * FnvPrime + c);
+    return unchecked((a * FnvPrime ^ b) * FnvPrime ^ c);
   }
 
   [Pure]
   public static ulong Combine(ulong a, ulong b, ulong c, ulong d)
   {
-    return unchecked(((a * FnvPrime + b) * FnvPrime + c) * FnvPrime + d);
+    return unchecked(((a * FnvPrime ^ b) * FnvPrime ^ c) * FnvPrime ^ d);
   }
 }

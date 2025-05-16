@@ -36,8 +36,33 @@ public class BasicTests
   public void TestSignatures01()
   {
     AssertMemberSurfaceEqual("public void M() { _ = 1; }", "public void M() { _ = 2; }");
+
+    // types change
     AssertMemberSurfaceNotEqual("public void M() { }", "public void M(int x) { }");
+    AssertMemberSurfaceNotEqual("public void M(sbyte x) { }", "public void M(char x) { }");
+    AssertMemberSurfaceNotEqual("public void M(byte x) { }", "public void M(bool x) { }");
+    AssertMemberSurfaceNotEqual("public void M(ushort x) { }", "public void M(short x) { }");
+    AssertMemberSurfaceNotEqual("public void M(uint x) { }", "public void M(int x) { }");
+    AssertMemberSurfaceNotEqual("public void M(ulong x) { }", "public void M(long x) { }");
+    AssertMemberSurfaceNotEqual("public void M(float x) { }", "public void M(double x) { }");
+    AssertMemberSurfaceNotEqual("public void M(nuint x) { }", "public void M(nint x) { }");
+    AssertMemberSurfaceNotEqual("public void M(object x) { }", "public void M(string x) { }");
+    AssertMemberSurfaceNotEqual("public void M(float x) { }", "public void M(decimal x) { }"); // type ref
+    AssertMemberSurfaceNotEqual("public void M(object x) { }", "public void M(C x) { }"); // type def
+    AssertMemberSurfaceNotEqual("public object M() => null;", "public object[] M() => null;");
+    AssertMemberSurfaceNotEqual("public unsafe void M(int x) { }", "public unsafe void M(int* x) { }");
+    AssertMemberSurfaceNotEqual("public unsafe void M(int* x) { }", "public unsafe void M(int** x) { }");
+    AssertMemberSurfaceNotEqual("public unsafe void M(int* x) { }", "public unsafe void M(ref int x) { }");
     AssertMemberSurfaceNotEqual("public void M() { }", "public int M() { return 1; }");
+    AssertMemberSurfaceEqual("private void M(int x) { }", "private void M(bool x) { }");
+
+    // parameter changes
+    AssertMemberSurfaceNotEqual("public void M(int x) { }", "public void M(int y) { }"); // name change
+    AssertMemberSurfaceNotEqual("public void M(ref int x) { }", "public void M(out int x) { x = 0; }"); // ref-out
+    AssertMemberSurfaceNotEqual("public void M(ref int x) { }", "public void M(in int x) { }"); // ref-in
+    AssertMemberSurfaceNotEqual("public void M(ref int x) { }", "public void M(ref readonly int x) { }"); // ref-ref readonly
+    AssertMemberSurfaceNotEqual("public void M(in int x) { }", "public void M(ref readonly int x) { }"); // in-ref readonly (attr change)
+    AssertMemberSurfaceNotEqual("public void M(int x) { }", "public void M(int x = 0) { }"); // optional or not
   }
 
   private void AssertEqualSurface(params IReadOnlyList<string> sourceCodes)

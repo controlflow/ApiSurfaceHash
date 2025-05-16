@@ -13,6 +13,8 @@ using ApiSurfaceHash;
 // todo: DebuggableAttribute nested type with "" name - enum erased?
 // todo: C# file-local types + internalsvisibleto = <Program>F9627F0A54B81FFFF0798796D9DC073EE4A8DE73FBB12F9E5435789023F83CA51__A is not referencable
 // todo: top-level code <Main>$ - ignore types/members starting from '<'
+// todo: init-only accessors breaking change
+// todo: required members breaking change (count of members changed)
 
 public class ApiSurfaceHasher
 {
@@ -69,6 +71,21 @@ public class ApiSurfaceHasher
     myHashes[handle] = hash = LongHashCode.Combine(nameHash, versionHash, cultureHash, publicKeyHash);
 
     return hash;
+  }
+
+  [Pure] // note: only includes FQN of the type definition
+  private ulong GetOrComputeTypeDefinitionUsageHash(TypeDefinitionHandle handle)
+  {
+    if (myHashes.TryGetValue(handle, out var hash)) return hash;
+
+    var typeDefinition = myMetadataReader.GetTypeDefinition(handle);
+
+    var namespaceHash = GetOrComputeStringHash(typeDefinition.Namespace);
+    var nameHash = GetOrComputeStringHash(typeDefinition.Name);
+
+    hash = LongHashCode.Combine(namespaceHash, nameHash);
+
+    return myHashes[handle] = hash;
   }
 
   // todo: similar method for type def "references" in attributes
@@ -166,7 +183,7 @@ public class ApiSurfaceHasher
     return 0;
   }
 
-  //
+  // todo: replace with non-allocating
   private sealed class SignatureHasher : ISignatureTypeProvider<ulong, object?>
   {
     private readonly ApiSurfaceHasher mySurfaceHasher;
@@ -176,25 +193,25 @@ public class ApiSurfaceHasher
       mySurfaceHasher = surfaceHasher;
     }
 
-    public ulong GetPrimitiveType(PrimitiveTypeCode typeCode)
+    ulong ISimpleTypeProvider<ulong>.GetPrimitiveType(PrimitiveTypeCode typeCode)
     {
-      return (ulong)typeCode;
+      return (ulong)typeCode; // use code itself as a hash
     }
 
     public ulong GetTypeFromDefinition(MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind)
     {
-      throw new NotImplementedException();
+      return mySurfaceHasher.GetOrComputeTypeDefinitionUsageHash(handle);
     }
 
     public ulong GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind)
     {
-      throw new NotImplementedException();
+      return mySurfaceHasher.GetOrComputeTypeReferenceHash(handle);
     }
 
-    public ulong GetSZArrayType(ulong elementType)
-    {
-      throw new NotImplementedException();
-    }
+    public ulong GetSZArrayType(ulong elementTypeHash) => LongHashCode.Combine(elementTypeHash, 1);
+    public ulong GetByReferenceType(ulong elementTypeHash) => LongHashCode.Combine(elementTypeHash, 2);
+    public ulong GetPointerType(ulong elementTypeHash) => LongHashCode.Combine(elementTypeHash, 3);
+    public ulong GetPinnedType(ulong elementTypeHash) => LongHashCode.Combine(elementTypeHash, 4);
 
     public ulong GetGenericInstantiation(ulong genericType, ImmutableArray<ulong> typeArguments)
     {
@@ -202,16 +219,6 @@ public class ApiSurfaceHasher
     }
 
     public ulong GetArrayType(ulong elementType, ArrayShape shape)
-    {
-      throw new NotImplementedException();
-    }
-
-    public ulong GetByReferenceType(ulong elementType)
-    {
-      throw new NotImplementedException();
-    }
-
-    public ulong GetPointerType(ulong elementType)
     {
       throw new NotImplementedException();
     }
@@ -236,13 +243,8 @@ public class ApiSurfaceHasher
       throw new NotImplementedException();
     }
 
-    public ulong GetPinnedType(ulong elementType)
-    {
-      throw new NotImplementedException();
-    }
-
-    public ulong GetTypeFromSpecification(MetadataReader reader, object? genericContext, TypeSpecificationHandle handle,
-      byte rawTypeKind)
+    public ulong GetTypeFromSpecification(
+      MetadataReader reader, object? genericContext, TypeSpecificationHandle handle, byte rawTypeKind)
     {
       throw new NotImplementedException();
     }
@@ -295,10 +297,28 @@ public class ApiSurfaceHasher
 
     var nameHash = GetOrComputeStringHash(methodDefinition.Name);
 
-    var signature = methodDefinition.DecodeSignature(mySignatureHasher, null);
+    var decodedSignature = methodDefinition.DecodeSignature(mySignatureHasher, genericContext: null);
 
-    var parametersHash = LongHashCode.Combine(signature.ParameterTypes);
-    return LongHashCode.Combine(nameHash, parametersHash, signature.ReturnType);
+    var parametersHash = LongHashCode.FnvOffset;
+    foreach (var parameterHandle in methodDefinition.GetParameters())
+    {
+      var parameter = myMetadataReader.GetParameter(parameterHandle);
+
+      const ParameterAttributes apiSurfaceAttributes =
+        ParameterAttributes.In
+        | ParameterAttributes.Out
+        | ParameterAttributes.HasDefault;
+
+      var surfaceAttributesHash = (ulong)(parameter.Attributes & apiSurfaceAttributes);
+
+      var parameterNameHash = GetOrComputeStringHash(parameter.Name);
+      parametersHash = LongHashCode.Combine(parametersHash, parameterNameHash, surfaceAttributesHash);
+    }
+
+    var parameterTypesHash = LongHashCode.Combine(decodedSignature.ParameterTypes);
+
+    return LongHashCode.Combine(
+      nameHash, parametersHash, parameterTypesHash, decodedSignature.ReturnType);
   }
 
   public static unsafe ulong Execute(byte* imagePtr, int imageLength)
