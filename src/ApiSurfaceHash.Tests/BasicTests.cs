@@ -64,6 +64,8 @@ public class BasicTests
   {
     // included in surface
     AssertSurfaceNotEqual(
+      "public class C { public int Field; }",
+      "public class C { public int FieldChanged; }",
       "public class C { public void Method() { } }",
       "public class C { public void MethodChanged() { } }",
       "public class C { protected void Method() { } }",
@@ -71,44 +73,71 @@ public class BasicTests
       "public class C { protected internal void Method() { } }",
       "public class C { protected internal void MethodChanged() { } }");
     AssertMemberSurfaceNotEqual(
+      "public class N { public int Field; }",
+      "public class N { public int FieldChanged; }",
       "public class N { public void Method() { } }",
       "public class N { public void MethodChanged() { } }",
+      "protected class N { public int Field; }",
+      "protected class N { public int FieldChanged; }",
       "protected class N { public void Method() { } }",
       "protected class N { public void MethodChanged() { } }",
+      "protected internal class N { public int Field; }",
+      "protected internal class N { public int FieldChanged; }",
       "protected internal class N { public void Method() { } }",
       "protected internal class N { public void MethodChanged() { } }");
 
     // internal is excluded by default
     AssertSurfaceEqual(
+      "internal class C { public int Field; }",
+      "internal class C { public int FieldChanged; }");
+    AssertSurfaceEqual(
       "internal class C { public void Method() { } }",
       "internal class C { public void MethodChanged() { } }");
     AssertMemberSurfaceEqual(
+      "internal int Field;",
+      "internal int FieldChanged;",
+      "private protected int Field;",
+      "private protected int FieldChanged;",
       "internal void Method() { }",
       "internal void MethodChanged() { }",
       "private protected void Method() { }",
       "private protected void MethodChanged() { }");
     AssertMemberSurfaceEqual(
+      "internal class N { public int Field; }",
+      "internal class N { public int FieldChanged; }",
       "internal class N { public void Method() { } }",
       "internal class N { public void MethodChanged() { } }",
+      "private protected class N { public int Field; }",
+      "private protected class N { public int FieldChanged; }",
       "private protected class N { public void Method() { } }",
       "private protected class N { public void MethodChanged() { } }");
     AssertSurfaceEqual( // file-local types are internal
-      "file class C { public void Method() { } }",
-      "file class C { public void MethodChanged() { } }");
+      "file class C { public void Method() { } public int Field; }",
+      "file class C { public void MethodChanged() { } public int FieldChanged; }");
 
     // internals exposed
     const string ivt = """[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]""";
     AssertSurfaceNotEqual(
+      ivt + "internal class C { public int Field; }",
+      ivt + "internal class C { public int FieldChanged; }",
       ivt + "internal class C { public void Method() { } }",
       ivt + "internal class C { public void MethodChanged() { } }");
     AssertSurfaceNotEqual(
+      ivt + "public class C { internal class N { internal int Field; } }",
+      ivt + "public class C { internal class N { internal int FieldChanged; } }",
       ivt + "public class C { internal class N { public void Method() { } } }",
       ivt + "public class C { internal class N { public void MethodChanged() { } } }",
+      ivt + "public class C { internal int Field; }",
+      ivt + "public class C { internal int FieldChanged; }",
       ivt + "public class C { internal void Method() { } }",
       ivt + "public class C { internal void MethodChanged() { } }");
     AssertSurfaceNotEqual(
+      ivt + "public class C { private protected class N { public int Field; } }",
+      ivt + "public class C { private protected class N { public int FieldChanged; } }",
       ivt + "public class C { private protected class N { public void Method() { } } }",
       ivt + "public class C { private protected class N { public void MethodChanged() { } } }",
+      ivt + "public class C { private protected int Field; }",
+      ivt + "public class C { private protected int FieldChanged; }",
       ivt + "public class C { private protected void Method() { } }",
       ivt + "public class C { private protected void MethodChanged() { } }");
 
@@ -123,10 +152,12 @@ public class BasicTests
     // private is private
     AssertSurfaceEqual(
       ivt + "internal class C { private void Method() { } }",
-      ivt + "internal class C { private void MethodChanged() { } }");
+      ivt + "internal class C { private void MethodChanged() { } }",
+      ivt + "internal class C { private int Field; }",
+      ivt + "internal class C { private int FieldChanged; }");
     AssertSurfaceEqual(
-      ivt + "public class C { private class N { public void Method() { } } }",
-      ivt + "public class C { private class N { public void MethodChanged() { } } }");
+      ivt + "public class C { private class N { public void Method() { } public int Field; } }",
+      ivt + "public class C { private class N { public void MethodChanged() { } public int FieldChanged; } }");
   }
 
   [Test]
@@ -243,6 +274,42 @@ public class BasicTests
       "public ref int M(int x) => throw null!;",
       "public ref int M(ref int x) => throw null!;",
       "public ref readonly int M(ref int x) => throw null!;");
+  }
+
+  [Test]
+  public void TestFieldSignatures()
+  {
+    AssertMemberSurfaceEqual(
+      "public int Field, A;",
+      "public int A, Field;",
+      "public int Field; public int A;",
+      "public int A; public int Field = 1;");
+    AssertMemberSurfaceNotEqual(
+      "public int Field;",
+      "public string Field;",
+      "public object Field;",
+      "public dynamic Field;",
+      "public const int Field = 0;",
+      "public const int Field = 1;",
+      "public const string Field = null;",
+      "public const string Field = \"\";",
+      "public const string Field = \"abc\";",
+      "public const object? Field = null;",
+      "public required int Field;",
+      "public readonly int Field;",
+      "public volatile int Field;", // modreq
+      "public static int Field;",
+      "public static readonly int Field;",
+      "[System.ThreadStatic] public static int Field;");
+    AssertSurfaceNotEqual(
+      "public ref struct S { public int RefField; }",
+      "public ref struct S { public ref int RefField; }",
+      "public ref struct S { public ref readonly int RefField; }",
+      "public ref struct S { public readonly int RefField; }",
+      "public ref struct S { public readonly ref int RefField; }",
+      "public ref struct S { public readonly ref readonly int RefField; }",
+      "public unsafe struct S { public fixed int Buf[1]; }",
+      "public unsafe struct S { public fixed int Buf[14]; }");
   }
 
   [Test]

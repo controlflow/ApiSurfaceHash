@@ -68,17 +68,17 @@ public class ApiSurfaceHasher
     var assemblyReference = myMetadataReader.GetAssemblyReference(handle);
 
     // System.Private.CoreLib, Version=9.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e
-    var nameHash = GetOrComputeStringHash(assemblyReference.Name);
-    var version = assemblyReference.Version;
-    var versionHash = LongHashCode.Combine(
-      (ulong)version.Major, (ulong)version.Minor, (ulong)version.Revision, (ulong)version.Build);
-    var cultureHash = GetOrComputeStringHash(assemblyReference.Culture);
-    var publicKeyHash = LongHashCode.FromBlob(
+    var assemblyNameHash = GetOrComputeStringHash(assemblyReference.Name);
+    var assemblyVersion = assemblyReference.Version;
+    var assemblyVersionHash = LongHashCode.Combine(
+      (ulong)assemblyVersion.Major, (ulong)assemblyVersion.Minor, (ulong)assemblyVersion.Revision, (ulong)assemblyVersion.Build);
+    var assemblyCultureHash = GetOrComputeStringHash(assemblyReference.Culture);
+    var assemblyPublicKeyHash = LongHashCode.FromBlob(
       myMetadataReader.GetBlobReader(assemblyReference.PublicKeyOrToken));
 
-    myHashes[handle] = hash = LongHashCode.Combine(nameHash, versionHash, cultureHash, publicKeyHash);
+    hash = LongHashCode.Combine(assemblyNameHash, assemblyVersionHash, assemblyCultureHash, assemblyPublicKeyHash);
 
-    return hash;
+    return myHashes[handle] = hash;
   }
 
   [Pure]
@@ -125,7 +125,6 @@ public class ApiSurfaceHasher
     }
   }
 
-  // todo: similar method for type def "references" in attributes
   [Pure]
   private ulong GetOrComputeTypeReferenceHash(TypeReferenceHandle handle)
   {
@@ -298,11 +297,18 @@ public class ApiSurfaceHasher
 
     var typeTypeParametersHash = GetTypeParametersSurfaceHash(typeDefinition.GetGenericParameters());
 
-    // todo:
-    typeDefinition.GetProperties();
-    typeDefinition.GetEvents();
+    var typeMemberHashes = new List<ulong>();
+    var surfaceMethods = new HashSet<MethodDefinitionHandle>();
 
-    var typeMethodHashes = new List<ulong>();
+    foreach (var fieldDefinitionHandle in typeDefinition.GetFields())
+    {
+      var fieldDefinition = myMetadataReader.GetFieldDefinition(fieldDefinitionHandle);
+
+      if (IsPartOfTheApiSurface(fieldDefinition.Attributes, includeInternals))
+      {
+        typeMemberHashes.Add(GetFieldDefinitionSurfaceHash(fieldDefinition));
+      }
+    }
 
     foreach (var methodDefinitionHandle in typeDefinition.GetMethods())
     {
@@ -310,17 +316,28 @@ public class ApiSurfaceHasher
 
       if (IsPartOfTheApiSurface(methodDefinition.Attributes, includeInternals))
       {
-        var methodDefinitionHash = GetMethodDefinitionSurfaceHash(methodDefinition);
-        typeMethodHashes.Add(methodDefinitionHash);
+        typeMemberHashes.Add(GetMethodDefinitionSurfaceHash(methodDefinition));
+        surfaceMethods.Add(methodDefinitionHandle);
       }
     }
 
-    typeMethodHashes.Sort();
+    // todo:
+    foreach (var propertyDefinitionHandle in typeDefinition.GetProperties())
+    {
+      var propertyDefinition = myMetadataReader.GetPropertyDefinition(propertyDefinitionHandle);
+
+      var propertySignature = propertyDefinition.DecodeSignature(mySignatureHasher, genericContext: null);
+      // todo: lookup accessor methods
+    }
+
+    //typeDefinition.GetEvents();
+
+    typeMemberHashes.Sort();
 
     var typeCustomAttributesHash = GetCustomAttributesSurfaceHash(typeDefinition.GetCustomAttributes());
 
     var fqnHash = LongHashCode.Combine(namespaceHash, nameHash, typeSurfaceAttributesHash);
-    var methodsHash = LongHashCode.Combine(typeMethodHashes);
+    var methodsHash = LongHashCode.Combine(typeMemberHashes);
 
     return LongHashCode.Combine(fqnHash, typeTypeParametersHash, typeCustomAttributesHash, methodsHash);
   }
@@ -378,9 +395,35 @@ public class ApiSurfaceHasher
   }
 
   [Pure]
+  private ulong GetFieldDefinitionSurfaceHash(FieldDefinition fieldDefinition)
+  {
+    //var fieldName = myMetadataReader.GetString(fieldDefinition.Name);
+
+    const FieldAttributes apiSurfaceAttributes =
+      FieldAttributes.FieldAccessMask
+      | FieldAttributes.Static
+      | FieldAttributes.InitOnly
+      | FieldAttributes.Literal
+      | FieldAttributes.SpecialName;
+
+    var fieldAttributes = fieldDefinition.Attributes & apiSurfaceAttributes;
+    var fieldAttributesHash = (ulong)fieldAttributes;
+
+    var fieldNameHash = GetOrComputeStringHash(fieldDefinition.Name);
+    var fieldTypeHash = fieldDefinition.DecodeSignature(mySignatureHasher, genericContext: null);
+    var fieldConstantValueHash = GetOrComputeConstantValueHash(fieldDefinition.GetDefaultValue());
+
+    var fieldCustomAttributesHash = GetCustomAttributesSurfaceHash(fieldDefinition.GetCustomAttributes());
+
+    var fieldSignatureHash = LongHashCode.Combine(fieldNameHash, fieldTypeHash, fieldConstantValueHash);
+
+    return LongHashCode.Combine(fieldAttributesHash, fieldSignatureHash, fieldCustomAttributesHash);
+  }
+
+  [Pure]
   private ulong GetMethodDefinitionSurfaceHash(MethodDefinition methodDefinition)
   {
-    var methodName = myMetadataReader.GetString(methodDefinition.Name);
+    //var methodName = myMetadataReader.GetString(methodDefinition.Name);
 
     const MethodAttributes apiSurfaceAttributes =
       MethodAttributes.MemberAccessMask
@@ -662,6 +705,25 @@ public class ApiSurfaceHasher
       case MethodAttributes.FamORAssem:
       case MethodAttributes.Assembly when includeInternals:
       case MethodAttributes.FamANDAssem when includeInternals:
+        return true;
+
+      default:
+        return false;
+    }
+  }
+
+  [Pure]
+  private bool IsPartOfTheApiSurface(FieldAttributes fieldAttributes, bool includeInternals)
+  {
+    fieldAttributes &= FieldAttributes.FieldAccessMask;
+
+    switch (fieldAttributes)
+    {
+      case FieldAttributes.Public:
+      case FieldAttributes.Family:
+      case FieldAttributes.FamORAssem:
+      case FieldAttributes.Assembly when includeInternals:
+      case FieldAttributes.FamANDAssem when includeInternals:
         return true;
 
       default:

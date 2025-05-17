@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 
@@ -14,13 +15,14 @@ public sealed class RoslynCompiler
     var syntaxTree = CSharpSyntaxTree.ParseText(sourceCode);
 
     var compilationOptions = new CSharpCompilationOptions(
-      OutputKind.DynamicallyLinkedLibrary,
+      outputKind: OutputKind.DynamicallyLinkedLibrary,
       optimizationLevel: EnableOptimizations ? OptimizationLevel.Release : OptimizationLevel.Debug,
       deterministic: Deterministic,
       allowUnsafe: true,
       nullableContextOptions: NullableContextOptions.Enable);
 
-    var metadataReferences = GetAssembliesWithTypes(typeof(object), typeof(Console));
+    var metadataReferences = GetAssembliesWithTypes(
+      typeof(object), typeof(DynamicAttribute), typeof(Task), typeof(Console));
 
     var compilation = CSharpCompilation.Create(
       AssemblyName, [syntaxTree], metadataReferences, compilationOptions);
