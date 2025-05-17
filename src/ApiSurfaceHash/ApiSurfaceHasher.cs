@@ -288,13 +288,13 @@ public class ApiSurfaceHasher
     var namespaceHash = GetOrComputeStringHash(typeDefinition.Namespace);
     var nameHash = GetOrComputeStringHash(typeDefinition.Name);
 
-    // todo: visibility
     const TypeAttributes apiSurfaceAttributes =
       TypeAttributes.Abstract
       | TypeAttributes.Sealed
       | TypeAttributes.SpecialName
       | TypeAttributes.RTSpecialName
-      | TypeAttributes.ClassSemanticsMask; // interface or not
+      | TypeAttributes.ClassSemanticsMask // interface or not
+      | TypeAttributes.VisibilityMask;
 
     var typeSurfaceAttributes = typeDefinition.Attributes & apiSurfaceAttributes;
     var typeSurfaceAttributesHash = (ulong)typeSurfaceAttributes;
@@ -611,16 +611,13 @@ public class ApiSurfaceHasher
     var accessRights = typeDefinition.Attributes & TypeAttributes.VisibilityMask;
 
     var declaringTypeHandle = typeDefinition.GetDeclaringType();
-    if (!declaringTypeHandle.IsNil)
+    if (!declaringTypeHandle.IsNil) // nested type
     {
       var containingTypeDefinition = myMetadataReader.GetTypeDefinition(declaringTypeHandle);
-      if (!IsPartOfTheApiSurface(containingTypeDefinition, includeInternals))
-      {
-        return false;
-      }
-    }
 
-    // todo: nested handling
+      if (!IsPartOfTheApiSurface(containingTypeDefinition, includeInternals))
+        return false;
+    }
 
     switch (accessRights)
     {
@@ -628,19 +625,22 @@ public class ApiSurfaceHasher
       case TypeAttributes.NestedPublic:
       case TypeAttributes.NestedFamily: // protected
       case TypeAttributes.NestedFamORAssem: // protected internal
+      {
         return true;
+      }
 
       case 0 when includeInternals: // internal
       case TypeAttributes.NestedAssembly when includeInternals: // internal
       case TypeAttributes.NestedFamANDAssem when includeInternals: // private protected
       {
-        // compiler-generated types
-        //   <Module>
-        //   <PrivateImplementationDetails>
-        //   file-local C# types
+        // compiler-generated types:
+        //   - `<Module>`
+        //   - `<PrivateImplementationDetails>`
+        //   - file-local C# types
         var typeNameBlobReader = myMetadataReader.GetBlobReader(typeDefinition.Name);
         if (typeNameBlobReader.Length > 0)
         {
+          // check the first character to be ASCII '<'
           var firstChar = (char)typeNameBlobReader.ReadByte();
           if (firstChar == '<')
           {

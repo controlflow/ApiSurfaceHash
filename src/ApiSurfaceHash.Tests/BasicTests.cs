@@ -27,10 +27,7 @@ public class BasicTests
     // added member
     AssertSurfaceEqual(
       "namespace ApiSurfaceHash.Tests { public class C; }",
-      """
-      namespace ApiSurfaceHash.Tests;
-      public class C { void M() { } }
-      """);
+      "namespace ApiSurfaceHash.Tests; public class C { void M() { } }");
   }
 
   [Test]
@@ -65,9 +62,27 @@ public class BasicTests
   [Test]
   public void TestInternalVisibleTo()
   {
+    // included in surface
+    AssertSurfaceNotEqual(
+      "public class C { public void Method() { } }",
+      "public class C { public void MethodChanged() { } }");
+    AssertSurfaceNotEqual(
+      "public class C { public class N { public void Method() { } } }",
+      "public class C { public class N { public void MethodChanged() { } } }",
+      "public class C { protected class N { public void Method() { } } }",
+      "public class C { protected class N { public void MethodChanged() { } } }",
+      "public class C { protected internal class N { public void Method() { } } }",
+      "public class C { protected internal class N { public void MethodChanged() { } } }");
+
+    // internal is excluded by default
     AssertSurfaceEqual(
       "internal class C { public void Method() { } }",
       "internal class C { public void MethodChanged() { } }");
+    AssertSurfaceEqual(
+      "public class C { internal class N { public void Method() { } } }",
+      "public class C { internal class N { public void MethodChanged() { } } }",
+      "public class C { private protected class N { public void Method() { } } }",
+      "public class C { private protected class N { public void MethodChanged() { } } }");
     AssertSurfaceEqual( // file-local types are internal
       "file class C { public void Method() { } }",
       "file class C { public void MethodChanged() { } }");
@@ -81,6 +96,24 @@ public class BasicTests
       """
       [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
       internal class C { public void MethodChanged() { } }
+      """);
+    AssertSurfaceNotEqual(
+      """
+      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
+      public class C { internal class N { public void Method() { } } }
+      """,
+      """
+      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
+      public class C { internal class N { public void MethodChanged() { } } }
+      """);
+    AssertSurfaceNotEqual(
+      """
+      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
+      public class C { private protected class N { public void Method() { } } }
+      """,
+      """
+      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
+      public class C { private protected class N { public void MethodChanged() { } } }
       """);
 
     // exceptions
