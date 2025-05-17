@@ -36,7 +36,7 @@ public class BasicTests
   [Test]
   public void TestTypeKinds()
   {
-    AssertSurfaceNotEqual(
+    AssertSurfaceNotEqual( // top-level types
       "public class C;",
       "public abstract class C;",
       "public sealed class C;",
@@ -48,6 +48,65 @@ public class BasicTests
       "public record C;",
       "public record struct C;",
       "public interface C;");
+    AssertMemberSurfaceNotEqual( // nested types
+      "public class N;",
+      "public abstract class N;",
+      "public sealed class N;",
+      "public static class N;",
+      "public struct N;",
+      "public ref struct N;",
+      "public readonly struct N;",
+      "public readonly ref struct N;",
+      "public record N;",
+      "public record struct N;",
+      "public interface N;");
+  }
+
+  [Test]
+  public void TestInternalVisibleTo()
+  {
+    AssertSurfaceEqual(
+      "internal class C { public void Method() { } }",
+      "internal class C { public void MethodChanged() { } }");
+    AssertSurfaceEqual( // file-local types are internal
+      "file class C { public void Method() { } }",
+      "file class C { public void MethodChanged() { } }");
+
+    // internals exposed
+    AssertSurfaceNotEqual(
+      """
+      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
+      internal class C { public void Method() { } }
+      """,
+      """
+      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
+      internal class C { public void MethodChanged() { } }
+      """);
+
+    // exceptions
+    AssertSurfaceEqual( // <PrivateImplDetails> is not part of the surface
+      """
+      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
+      public class C {
+        public int[] Method() => null;
+      }
+      """,
+      """
+      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
+      public class C {
+        public int[] Method() => new[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 }; // stored in private impl details
+      }
+      """);
+
+    AssertSurfaceEqual( // file-local types are not part of the surface
+      """
+      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
+      file class C { public void Method() { } }
+      """,
+      """
+      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
+      file class C { public void MethodChanged() { } }
+      """);
   }
 
   [Test]

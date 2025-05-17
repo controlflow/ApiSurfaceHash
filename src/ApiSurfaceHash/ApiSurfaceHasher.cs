@@ -4,6 +4,7 @@ using System.Diagnostics.Contracts;
 using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using System.Runtime.CompilerServices;
 using ApiSurfaceHash;
 
 // todo: internalsvisibleto
@@ -32,10 +33,12 @@ public class ApiSurfaceHasher
   // todo: split to increase locality?
   private readonly Dictionary<EntityHandle, ulong> myHashes = new();
 
-  private static readonly ulong ourCompilerServicesNamespaceHash
+  private const string InternalsVisibleToAttributeName = nameof(InternalsVisibleToAttribute);
+  private const string SystemRuntimeCompilerServicesNamespace = "System.Runtime.CompilerServices";
+  private static readonly ulong CompilerServicesNamespaceHash
     = LongHashCode.FromUtf8String("System.Runtime.CompilerServices"u8);
-  private static readonly ulong ourInternalsVisibleNameHash
-    = LongHashCode.FromUtf8String("InternalsVisibleTo"u8);
+  private static readonly ulong InternalsVisibleNameHash
+    = LongHashCode.FromUtf8String("InternalsVisibleToAttribute"u8);
 
   private ApiSurfaceHasher(MetadataReader metadataReader)
   {
@@ -436,6 +439,62 @@ public class ApiSurfaceHasher
       methodParametersHash, methodCustomAttributesHash);
   }
 
+  private bool CheckHasInternalsVisibleTo(AssemblyDefinition assemblyDefinition)
+  {
+    foreach (var customAttributeHandle in assemblyDefinition.GetCustomAttributes())
+    {
+      var customAttribute = myMetadataReader.GetCustomAttribute(customAttributeHandle);
+
+      switch (customAttribute.Constructor.Kind)
+      {
+        case HandleKind.MemberReference:
+        {
+          var memberReference = myMetadataReader.GetMemberReference((MemberReferenceHandle)customAttribute.Constructor);
+
+          if (memberReference.Parent.Kind == HandleKind.TypeReference)
+          {
+            var typeReference = myMetadataReader.GetTypeReference((TypeReferenceHandle)memberReference.Parent);
+
+            var s = myMetadataReader.GetString(typeReference.Name);
+
+            if (GetOrComputeStringHash(typeReference.Name) == InternalsVisibleNameHash
+                && GetOrComputeStringHash(typeReference.Namespace) == CompilerServicesNamespaceHash
+                && myMetadataReader.StringComparer.Equals(typeReference.Name, InternalsVisibleToAttributeName)
+                && myMetadataReader.StringComparer.Equals(typeReference.Namespace, SystemRuntimeCompilerServicesNamespace))
+            {
+              return true;
+            }
+          }
+          else
+          {
+            // todo: ?
+          }
+
+          break;
+        }
+
+        case HandleKind.MethodDefinition:
+        {
+          var methodDefinition = myMetadataReader.GetMethodDefinition((MethodDefinitionHandle)customAttribute.Constructor);
+          var typeDefinition = myMetadataReader.GetTypeDefinition(methodDefinition.GetDeclaringType());
+
+          if (GetOrComputeStringHash(typeDefinition.Name) == InternalsVisibleNameHash
+              && GetOrComputeStringHash(typeDefinition.Namespace) == CompilerServicesNamespaceHash
+              && myMetadataReader.StringComparer.Equals(typeDefinition.Name, InternalsVisibleToAttributeName)
+              && myMetadataReader.StringComparer.Equals(typeDefinition.Namespace, SystemRuntimeCompilerServicesNamespace))
+          {
+            return true;
+          }
+
+          break;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  // todo: not all attrs are part of the API "surface"
   [Pure] // todo: incomplete
   private ulong GetCustomAttributesSurfaceHash(CustomAttributeHandleCollection customAttributes)
   {
@@ -498,6 +557,10 @@ public class ApiSurfaceHasher
 
     var surfaceHasher = new ApiSurfaceHasher(metadataReader);
 
+    var assemblyDefinition = metadataReader.GetAssemblyDefinition();
+    var internalsAreVisible = surfaceHasher.CheckHasInternalsVisibleTo(assemblyDefinition);
+    var assemblyCustomAttributesSurfaceHash = surfaceHasher.GetCustomAttributesSurfaceHash(assemblyDefinition.GetCustomAttributes());
+
     // 1. hash assembly attributes and check [assembly: InternalsVisibleTo] presence
     // 2. hash module attributes
     // 3. hash types
@@ -512,14 +575,10 @@ public class ApiSurfaceHasher
       var ns = metadataReader.GetString(typeDefinition.Namespace);
       var fqn = (ns.Length == 0 ? "" : ns + ".") + metadataReader.GetString(typeDefinition.Name);
 
-      if ((typeDefinition.Attributes & (TypeAttributes.Public | TypeAttributes.NestedPublic)) != 0)
+      if (surfaceHasher.IsPartOfTheApiSurface(typeDefinition, internalsAreVisible))
       {
         typeHashes.Add(
           surfaceHasher.GetTypeDefinitionSurfaceHash(typeDefinition));
-      }
-      else
-      {
-        //typeDefinition.Attributes.
       }
     }
 
@@ -544,5 +603,55 @@ public class ApiSurfaceHasher
     {
       return Execute(ptr, assemblyBytes.Length);
     }
+  }
+
+  [Pure]
+  private bool IsPartOfTheApiSurface(TypeDefinition typeDefinition, bool includeInternals)
+  {
+    var accessRights = typeDefinition.Attributes & TypeAttributes.VisibilityMask;
+
+    var declaringTypeHandle = typeDefinition.GetDeclaringType();
+    if (!declaringTypeHandle.IsNil)
+    {
+      var containingTypeDefinition = myMetadataReader.GetTypeDefinition(declaringTypeHandle);
+      if (!IsPartOfTheApiSurface(containingTypeDefinition, includeInternals))
+      {
+        return false;
+      }
+    }
+
+    // todo: nested handling
+
+    switch (accessRights)
+    {
+      case TypeAttributes.Public:
+      case TypeAttributes.NestedPublic:
+      case TypeAttributes.NestedFamily: // protected
+      case TypeAttributes.NestedFamORAssem: // protected internal
+        return true;
+
+      case 0 when includeInternals: // internal
+      case TypeAttributes.NestedAssembly when includeInternals: // internal
+      case TypeAttributes.NestedFamANDAssem when includeInternals: // private protected
+      {
+        // compiler-generated types
+        //   <Module>
+        //   <PrivateImplementationDetails>
+        //   file-local C# types
+        var typeNameBlobReader = myMetadataReader.GetBlobReader(typeDefinition.Name);
+        if (typeNameBlobReader.Length > 0)
+        {
+          var firstChar = (char)typeNameBlobReader.ReadByte();
+          if (firstChar == '<')
+          {
+            return false;
+          }
+        }
+
+        return true;
+      }
+    }
+
+    return false;
   }
 }
