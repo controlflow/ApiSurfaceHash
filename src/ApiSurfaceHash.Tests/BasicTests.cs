@@ -65,81 +65,68 @@ public class BasicTests
     // included in surface
     AssertSurfaceNotEqual(
       "public class C { public void Method() { } }",
-      "public class C { public void MethodChanged() { } }");
-    AssertSurfaceNotEqual(
-      "public class C { public class N { public void Method() { } } }",
-      "public class C { public class N { public void MethodChanged() { } } }",
-      "public class C { protected class N { public void Method() { } } }",
-      "public class C { protected class N { public void MethodChanged() { } } }",
-      "public class C { protected internal class N { public void Method() { } } }",
-      "public class C { protected internal class N { public void MethodChanged() { } } }");
+      "public class C { public void MethodChanged() { } }",
+      "public class C { protected void Method() { } }",
+      "public class C { protected void MethodChanged() { } }",
+      "public class C { protected internal void Method() { } }",
+      "public class C { protected internal void MethodChanged() { } }");
+    AssertMemberSurfaceNotEqual(
+      "public class N { public void Method() { } }",
+      "public class N { public void MethodChanged() { } }",
+      "protected class N { public void Method() { } }",
+      "protected class N { public void MethodChanged() { } }",
+      "protected internal class N { public void Method() { } }",
+      "protected internal class N { public void MethodChanged() { } }");
 
     // internal is excluded by default
     AssertSurfaceEqual(
       "internal class C { public void Method() { } }",
       "internal class C { public void MethodChanged() { } }");
-    AssertSurfaceEqual(
-      "public class C { internal class N { public void Method() { } } }",
-      "public class C { internal class N { public void MethodChanged() { } } }",
-      "public class C { private protected class N { public void Method() { } } }",
-      "public class C { private protected class N { public void MethodChanged() { } } }");
+    AssertMemberSurfaceEqual(
+      "internal void Method() { }",
+      "internal void MethodChanged() { }",
+      "private protected void Method() { }",
+      "private protected void MethodChanged() { }");
+    AssertMemberSurfaceEqual(
+      "internal class N { public void Method() { } }",
+      "internal class N { public void MethodChanged() { } }",
+      "private protected class N { public void Method() { } }",
+      "private protected class N { public void MethodChanged() { } }");
     AssertSurfaceEqual( // file-local types are internal
       "file class C { public void Method() { } }",
       "file class C { public void MethodChanged() { } }");
 
     // internals exposed
+    const string ivt = """[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]""";
     AssertSurfaceNotEqual(
-      """
-      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
-      internal class C { public void Method() { } }
-      """,
-      """
-      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
-      internal class C { public void MethodChanged() { } }
-      """);
+      ivt + "internal class C { public void Method() { } }",
+      ivt + "internal class C { public void MethodChanged() { } }");
     AssertSurfaceNotEqual(
-      """
-      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
-      public class C { internal class N { public void Method() { } } }
-      """,
-      """
-      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
-      public class C { internal class N { public void MethodChanged() { } } }
-      """);
+      ivt + "public class C { internal class N { public void Method() { } } }",
+      ivt + "public class C { internal class N { public void MethodChanged() { } } }",
+      ivt + "public class C { internal void Method() { } }",
+      ivt + "public class C { internal void MethodChanged() { } }");
     AssertSurfaceNotEqual(
-      """
-      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
-      public class C { private protected class N { public void Method() { } } }
-      """,
-      """
-      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
-      public class C { private protected class N { public void MethodChanged() { } } }
-      """);
+      ivt + "public class C { private protected class N { public void Method() { } } }",
+      ivt + "public class C { private protected class N { public void MethodChanged() { } } }",
+      ivt + "public class C { private protected void Method() { } }",
+      ivt + "public class C { private protected void MethodChanged() { } }");
 
     // exceptions
     AssertSurfaceEqual( // <PrivateImplDetails> is not part of the surface
-      """
-      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
-      public class C {
-        public int[] Method() => null;
-      }
-      """,
-      """
-      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
-      public class C {
-        public int[] Method() => new[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 }; // stored in private impl details
-      }
-      """);
-
+      ivt + "public class C { public int[] Method() => null; }",
+      ivt + "public class C { public int[] Method() => new[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 }; /* stored in private impl details */ }");
     AssertSurfaceEqual( // file-local types are not part of the surface
-      """
-      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
-      file class C { public void Method() { } }
-      """,
-      """
-      [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("a")]
-      file class C { public void MethodChanged() { } }
-      """);
+      ivt + "file class C { public void Method() { } }",
+      ivt + "file class C { public void MethodChanged() { } }");
+
+    // private is private
+    AssertSurfaceEqual(
+      ivt + "internal class C { private void Method() { } }",
+      ivt + "internal class C { private void MethodChanged() { } }");
+    AssertSurfaceEqual(
+      ivt + "public class C { private class N { public void Method() { } } }",
+      ivt + "public class C { private class N { public void MethodChanged() { } } }");
   }
 
   [Test]
@@ -289,6 +276,7 @@ public class BasicTests
       "public interface C<T>;",
       "public interface C<in T>;",
       "public interface C<out T>;");
+    // todo: type constraints
 
     AssertSurfaceNotEqual(
       "public class C;",
@@ -327,7 +315,6 @@ public class BasicTests
       #nullable disable
       public void M<T>() where T : notnull { }
       """);
-
   }
 
   private void AssertSurfaceEqual(params IReadOnlyList<string> sourceCodes)
@@ -449,12 +436,5 @@ public class BasicTests
 
     var peBytes = myCompiler.Compile(string.Format(template, member));
     return ApiSurfaceHasher.Execute(peBytes);
-  }
-
-  private bool CheckMemberSurfaceEqual(string member1, string member2)
-  {
-    var currentHash1 = GetMemberSurfaceHash(member1);
-    var currentHash2 = GetMemberSurfaceHash(member2);
-    return currentHash1 == currentHash2;
   }
 }

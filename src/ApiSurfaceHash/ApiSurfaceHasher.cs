@@ -7,13 +7,9 @@ using System.Reflection.PortableExecutable;
 using System.Runtime.CompilerServices;
 using ApiSurfaceHash;
 
-// todo: internalsvisibleto
-//[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Foo")]
+// todo: class vs struct?
 // todo: sort hashes, not types/members
-// todo: internal class '<PrivateImplementationDetails>' handling
 // todo: detect popular FQNs with hash
-// todo: DebuggableAttribute nested type with "" name - enum erased?
-// todo: C# file-local types + internalsvisibleto = <Program>F9627F0A54B81FFFF0798796D9DC073EE4A8DE73FBB12F9E5435789023F83CA51__A is not referencable
 // todo: top-level code <Main>$ - ignore types/members starting from '<'
 // todo: init-only accessors breaking change
 // todo: required members breaking change (count of members changed)
@@ -24,6 +20,7 @@ using ApiSurfaceHash;
 // todo: delegate types
 // todo: record clone method
 // todo: type layout affects compilation?
+// todo: getstring - remove all
 
 public class ApiSurfaceHasher
 {
@@ -283,7 +280,7 @@ public class ApiSurfaceHasher
   // todo: nested types
   // todo: generic type parameters
   [Pure]
-  private ulong GetTypeDefinitionSurfaceHash(TypeDefinition typeDefinition)
+  private ulong GetTypeDefinitionSurfaceHash(TypeDefinition typeDefinition, bool includeInternals)
   {
     var namespaceHash = GetOrComputeStringHash(typeDefinition.Namespace);
     var nameHash = GetOrComputeStringHash(typeDefinition.Name);
@@ -311,10 +308,7 @@ public class ApiSurfaceHasher
     {
       var methodDefinition = myMetadataReader.GetMethodDefinition(methodDefinitionHandle);
 
-      var accessRights = methodDefinition.Attributes & MethodAttributes.MemberAccessMask;
-
-      // only publicly accessible member
-      if (accessRights is MethodAttributes.Public or MethodAttributes.Family or MethodAttributes.FamORAssem)
+      if (IsPartOfTheApiSurface(methodDefinition.Attributes, includeInternals))
       {
         var methodDefinitionHash = GetMethodDefinitionSurfaceHash(methodDefinition);
         typeMethodHashes.Add(methodDefinitionHash);
@@ -389,7 +383,8 @@ public class ApiSurfaceHasher
     var methodName = myMetadataReader.GetString(methodDefinition.Name);
 
     const MethodAttributes apiSurfaceAttributes =
-      MethodAttributes.MemberAccessMask | MethodAttributes.Static;
+      MethodAttributes.MemberAccessMask
+      | MethodAttributes.Static;
 
     // todo: attrs, header
 
@@ -578,7 +573,7 @@ public class ApiSurfaceHasher
       if (surfaceHasher.IsPartOfTheApiSurface(typeDefinition, internalsAreVisible))
       {
         typeHashes.Add(
-          surfaceHasher.GetTypeDefinitionSurfaceHash(typeDefinition));
+          surfaceHasher.GetTypeDefinitionSurfaceHash(typeDefinition, internalsAreVisible));
       }
     }
 
@@ -653,5 +648,24 @@ public class ApiSurfaceHasher
     }
 
     return false;
+  }
+
+  [Pure]
+  private bool IsPartOfTheApiSurface(MethodAttributes methodAttributes, bool includeInternals)
+  {
+    methodAttributes &= MethodAttributes.MemberAccessMask;
+
+    switch (methodAttributes)
+    {
+      case MethodAttributes.Public:
+      case MethodAttributes.Family:
+      case MethodAttributes.FamORAssem:
+      case MethodAttributes.Assembly when includeInternals:
+      case MethodAttributes.FamANDAssem when includeInternals:
+        return true;
+
+      default:
+        return false;
+    }
   }
 }
