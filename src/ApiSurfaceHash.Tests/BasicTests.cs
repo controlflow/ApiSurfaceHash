@@ -387,19 +387,55 @@ public class BasicTests
       "public class C<T> { public class N<U> { public void M(T x) { } } }",
       "public class C<T> { public class N<U> { public void M(U x) { } } }");
     AssertSurfaceNotEqual(
-      "public class C<T> { }",
-      "public class C<T> where T : class { }",
-      "public class C<T> where T : struct { }",
-      "public class C<T> where T : unmanaged { }",
-      "public class C<T> where T : new() { }",
-      "public class C<T> where T : notnull { }",
-      "public class C<T> where T : System.Enum { }",
-      "public class C<T> where T : System.Delegate { }",
+      "public class C;",
+      "public class C<T>;",
+      "public class C<T1, T2>;",
+      "public class C<T> where T : class;",
+      "public class C<T> where T : struct;",
+      "public class C<T> where T : unmanaged;",
+      "public class C<T> where T : new();",
+      "public class C<T> where T : notnull;",
+      "public class C<T> where T : System.Enum;",
+      "public class C<T> where T : System.Delegate;",
       "public interface C;",
       "public interface C<T>;",
       "public interface C<in T>;",
       "public interface C<out T>;");
-    // todo: type constraints
+    AssertSurfaceEqual(
+      """
+      public class B;
+      public interface I1;
+      public interface I2;
+      public class C<T> where T : B, I1, I2, new();
+      public class L<T> : System.Collections.Generic.List<T[]>;
+      """,
+      """
+      public interface I2;
+      public interface I1;
+      public class B;
+      public class C<T> where T : B, I2, I1, new();
+      public class L<T> : System.Collections.Generic.List<T[]>;
+      """);
+    AssertSurfaceNotEqual(
+      """
+      public class A : System.Attribute;
+      public class C<T>;
+      """,
+      """
+      public class A : System.Attribute;
+      public class C<[A] T>;
+      """);
+    AssertSurfaceNotEqual(
+      "public class C<T> where T : System.Collections.Generic.List<int>;",
+      "public class C<T> where T : System.Collections.Generic.List<uint>;",
+      "public class C<T> where T : System.Collections.Generic.List<T>;",
+      "public class C<T> where T : System.Collections.Generic.List<string>;",
+      "public class C<T> where T : System.Collections.Generic.List<object[]>;",
+      "public unsafe class C<T> where T : System.Collections.Generic.List<int*[]>;",
+      "public class C<T> where T : System.Collections.Generic.List<object>;",
+      "public interface C<T> where T : System.Collections.Generic.IList<int>;",
+      "public interface C<T> where T : System.Collections.Generic.IList<uint>;",
+      "public interface C<T> where T : System.Collections.Generic.IList<T>;");
 
     AssertSurfaceNotEqual(
       "public class C;",
@@ -437,6 +473,19 @@ public class BasicTests
       """
       #nullable disable
       public void M<T>() where T : notnull { }
+      """);
+    AssertMemberSurfaceEqual(
+      """
+      public class B;
+      public interface I1;
+      public interface I2;
+      public void M<T>() where T : B, I1, I2, new() { }
+      """,
+      """
+      public interface I2;
+      public interface I1;
+      public class B;
+      public void M<T>() where T : B, I2, I1, new() { }
       """);
   }
 

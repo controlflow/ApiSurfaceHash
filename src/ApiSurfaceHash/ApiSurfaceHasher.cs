@@ -365,6 +365,7 @@ public class ApiSurfaceHasher
   private ulong GetTypeParametersSurfaceHash(GenericParameterHandleCollection typeParameters)
   {
     var typeParameterHashes = new List<ulong>();
+    var typeParameterTypeConstraintsHashes = new List<ulong>();
 
     foreach (var typeParameterHandle in typeParameters)
     {
@@ -372,23 +373,28 @@ public class ApiSurfaceHasher
 
       // note: typeParameter.Name - is not a part of signature, type parameters are positional
       var typeParameterIndexHash = (ulong)typeParameter.Index;
-      var typeParameterConstraintsHash = (ulong)typeParameter.Attributes;
+      var typeParameterAttributesHash = (ulong)typeParameter.Attributes;
+
+      typeParameterTypeConstraintsHashes.Clear();
 
       foreach (var typeParameterConstraintHandle in typeParameter.GetConstraints())
       {
-        var constraint = myMetadataReader.GetGenericParameterConstraint(typeParameterConstraintHandle);
+        var typeConstraint = myMetadataReader.GetGenericParameterConstraint(typeParameterConstraintHandle);
 
-        var constraintTypeUsageHash = GetOrComputeTypeUsageHash(constraint.Type);
-        var constraintCustomAttributesHash = GetCustomAttributesSurfaceHash(constraint.GetCustomAttributes());
+        var typeConstraintTypeUsageHash = GetOrComputeTypeUsageHash(typeConstraint.Type);
+        var typeConstraintCustomAttributesHash = GetCustomAttributesSurfaceHash(typeConstraint.GetCustomAttributes());
 
-        typeParameterConstraintsHash = LongHashCode.Combine(typeParameterConstraintsHash,
-          constraintTypeUsageHash, constraintCustomAttributesHash);
+        typeParameterTypeConstraintsHashes.Add(LongHashCode.Combine(
+          typeConstraintTypeUsageHash, typeConstraintCustomAttributesHash));
       }
 
+      typeParameterTypeConstraintsHashes.Sort();
+
+      var typeParameterTypeConstraintsHash = LongHashCode.Combine(typeParameterTypeConstraintsHashes);
       var typeParameterCustomAttributesHash = GetCustomAttributesSurfaceHash(typeParameter.GetCustomAttributes());
 
-      typeParameterHashes.Add(
-        LongHashCode.Combine(typeParameterIndexHash, typeParameterConstraintsHash, typeParameterCustomAttributesHash));
+      typeParameterHashes.Add(LongHashCode.Combine(
+        typeParameterIndexHash, typeParameterAttributesHash, typeParameterTypeConstraintsHash, typeParameterCustomAttributesHash));
     }
 
     typeParameterHashes.Sort();
