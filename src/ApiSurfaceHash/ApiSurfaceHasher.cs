@@ -21,6 +21,8 @@ using ApiSurfaceHash;
 // todo: record clone method
 // todo: type layout affects compilation?
 // todo: getstring - remove all
+// todo: typeof(T) in attribute can reference internal/private type
+// todo: attrs can be internal!
 
 public class ApiSurfaceHasher
 {
@@ -427,9 +429,11 @@ public class ApiSurfaceHasher
 
     const MethodAttributes apiSurfaceAttributes =
       MethodAttributes.MemberAccessMask
-      | MethodAttributes.Static;
-
-    // todo: attrs, header
+      | MethodAttributes.Static
+      | MethodAttributes.Abstract
+      | MethodAttributes.Virtual
+      | MethodAttributes.Final
+      | MethodAttributes.SpecialName;
 
     var methodAttributes = methodDefinition.Attributes & apiSurfaceAttributes;
     var methodAttributesHash = (ulong)methodAttributes;

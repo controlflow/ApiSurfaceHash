@@ -22,7 +22,11 @@ public sealed class RoslynCompiler
       nullableContextOptions: NullableContextOptions.Enable);
 
     var metadataReferences = GetAssembliesWithTypes(
-      typeof(object), typeof(DynamicAttribute), typeof(Task), typeof(Console));
+      typeof(object),
+      typeof(DynamicAttribute),
+      typeof(Task),
+      typeof(IEnumerable<>),
+      typeof(Console));
 
     var compilation = CSharpCompilation.Create(
       AssemblyName, [syntaxTree], metadataReferences, compilationOptions);

@@ -1,7 +1,10 @@
 ﻿using System.Diagnostics.Contracts;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using NUnit.Framework;
 
-//[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Foo")]
+// todo: generic attributes
+// todo: generic type usages
 
 namespace ApiSurfaceHash.Tests;
 
@@ -44,7 +47,9 @@ public class BasicTests
       "public readonly ref struct C;",
       "public record C;",
       "public record struct C;",
-      "public interface C;");
+      "public interface C;",
+      "public enum C;",
+      "public delegate void C();");
     AssertMemberSurfaceNotEqual( // nested types
       "public class N;",
       "public abstract class N;",
@@ -56,7 +61,9 @@ public class BasicTests
       "public readonly ref struct N;",
       "public record N;",
       "public record struct N;",
-      "public interface N;");
+      "public interface N;",
+      "public enum N;",
+      "public delegate void N();");
   }
 
   [Test]
@@ -210,10 +217,36 @@ public class BasicTests
       "private void M() { }");
 
     // modifiers
-    AssertSurfaceEqual(
+    AssertSurfaceNotEqual(
       "public abstract class C { public void M() { } }",
+      "public abstract class C { public static void M() { } }",
       "public abstract class C { public abstract void M(); }",
-      "public abstract class C { public virtual void M() { } }");
+      "public abstract class C { public virtual void M() { } }",
+      "public class C { public string ToString() => \"a\"; }",
+      "public class C { public override string ToString() => \"a\"; }",
+      "public class C { public sealed override string ToString() => \"a\"; }");
+    AssertMemberSurfaceNotEqual( // C# has warnings when 'await' is absent
+      "public System.Threading.Tasks.Task M() => null;",
+      "public async System.Threading.Tasks.Task M() { }");
+    AssertMemberSurfaceEqual( // 'unsafe' is a C# thing
+      "public void M() { }",
+      "public unsafe void M() { int* ptr; }");
+    AssertMemberSurfaceEqual( // 'extern' is a impl detail
+      "public static void M() { }",
+      """
+      [System.Runtime.InteropServices.DllImport("aa")]
+      public static extern void M();
+      """);
+    AssertSurfaceNotEqual( // 'readonly' modifier for struct members
+      "public struct S { public void M() { } }",
+      "public struct S { public readonly void M() { } }",
+      "public readonly struct S { public void M() { } }");
+    AssertMemberSurfaceEqual( // impl details
+      "public void M() { }",
+      """
+      [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+      public void M() { }
+      """);
 
     // unmanaged types
     AssertMemberSurfaceNotEqual(
@@ -259,6 +292,11 @@ public class BasicTests
     AssertSurfaceNotEqual( // custom attrs mismatch
       "public static class E { public static void Extension(string s) { } }",
       "public static class E { public static void Extension(this string s) { } }");
+    AssertMemberSurfaceNotEqual( // params
+      "public void M(int[] xs) { }",
+      "public void M(params int[] xs) { }",
+      "public void M(System.Collections.Generic.IEnumerable<string> xs) { }",
+      "public void M(params System.Collections.Generic.IEnumerable<string> xs) { }");
 
     // return type change
     AssertMemberSurfaceNotEqual(
@@ -310,6 +348,24 @@ public class BasicTests
       "public ref struct S { public readonly ref readonly int RefField; }",
       "public unsafe struct S { public fixed int Buf[1]; }",
       "public unsafe struct S { public fixed int Buf[14]; }");
+    AssertSurfaceEqual(
+      "public enum E { A, B, C }",
+      "public enum E : int { A = 0, B = 1, C = 2 }");
+    AssertSurfaceNotEqual(
+      "public enum E { A, B, C }",
+      "public enum E { D, E, F }",
+      "public enum E : byte { A, B, C }",
+      "public enum E { A = 0, B = 1, C = 3 }");
+  }
+
+  [Test]
+  public void TestDelegates()
+  {
+    AssertSurfaceNotEqual(
+      "public delegate void Action();",
+      "public delegate void Action(int x);",
+      "public delegate void Action<T>(T x);",
+      "public delegate T Action<T>();");
   }
 
   [Test]
