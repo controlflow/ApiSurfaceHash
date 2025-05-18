@@ -90,4 +90,10 @@ internal static class LongHashCode
   {
     return unchecked(((a * FnvPrime ^ b) * FnvPrime ^ c) * FnvPrime ^ d);
   }
+
+  [Pure]
+  public static ulong Combine(ulong a, ulong b, ulong c, ulong d, ulong e)
+  {
+    return unchecked((((a * FnvPrime ^ b) * FnvPrime ^ c) * FnvPrime ^ d) * FnvPrime ^ e);
+  }
 }

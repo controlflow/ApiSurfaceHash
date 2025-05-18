@@ -87,6 +87,8 @@ public class ApiSurfaceHasher
   [Pure]
   private ulong GetOrComputeTypeUsageHash(EntityHandle handle)
   {
+    if (handle.IsNil) throw new ArgumentNullException();
+
     switch (handle.Kind)
     {
       case HandleKind.TypeReference:
@@ -282,8 +284,8 @@ public class ApiSurfaceHasher
   [Pure]
   private ulong GetTypeDefinitionSurfaceHash(TypeDefinition typeDefinition)
   {
-    var namespaceHash = GetOrComputeStringHash(typeDefinition.Namespace);
-    var nameHash = GetOrComputeStringHash(typeDefinition.Name);
+    var typeNamespaceHash = GetOrComputeStringHash(typeDefinition.Namespace);
+    var typeNameHash = GetOrComputeStringHash(typeDefinition.Name);
 
     const TypeAttributes apiSurfaceAttributes =
       TypeAttributes.Abstract
@@ -293,13 +295,11 @@ public class ApiSurfaceHasher
       | TypeAttributes.ClassSemanticsMask // interface or not
       | TypeAttributes.VisibilityMask;
 
-    var typeSurfaceAttributes = typeDefinition.Attributes & apiSurfaceAttributes;
-    var typeSurfaceAttributesHash = (ulong)typeSurfaceAttributes;
-
+    var typeAttributesHash = (ulong)(typeDefinition.Attributes & apiSurfaceAttributes);
+    var typeSuperTypesHash = GetSuperTypesHash();
     var typeTypeParametersHash = GetTypeParametersSurfaceHash(typeDefinition.GetGenericParameters());
 
     var typeMemberHashes = new List<ulong>();
-    var surfaceMethods = new HashSet<MethodDefinitionHandle>();
 
     foreach (var fieldDefinitionHandle in typeDefinition.GetFields())
     {
@@ -311,6 +311,8 @@ public class ApiSurfaceHasher
       }
     }
 
+    var apiSurfaceMethods = new HashSet<MethodDefinitionHandle>();
+
     foreach (var methodDefinitionHandle in typeDefinition.GetMethods())
     {
       var methodDefinition = myMetadataReader.GetMethodDefinition(methodDefinitionHandle);
@@ -318,7 +320,7 @@ public class ApiSurfaceHasher
       if (IsPartOfTheApiSurface(methodDefinition.Attributes))
       {
         typeMemberHashes.Add(GetMethodDefinitionSurfaceHash(methodDefinition));
-        surfaceMethods.Add(methodDefinitionHandle);
+        apiSurfaceMethods.Add(methodDefinitionHandle);
       }
     }
 
@@ -337,10 +339,75 @@ public class ApiSurfaceHasher
 
     var typeCustomAttributesHash = GetCustomAttributesSurfaceHash(typeDefinition.GetCustomAttributes());
 
-    var fqnHash = LongHashCode.Combine(namespaceHash, nameHash, typeSurfaceAttributesHash);
-    var methodsHash = LongHashCode.Combine(typeMemberHashes);
+    var typeHeaderHash = LongHashCode.Combine(
+      typeAttributesHash, typeNamespaceHash, typeNameHash, typeTypeParametersHash, typeSuperTypesHash);
+    var typeMembersHash = LongHashCode.Combine(typeMemberHashes);
 
-    return LongHashCode.Combine(fqnHash, typeTypeParametersHash, typeCustomAttributesHash, methodsHash);
+    return LongHashCode.Combine(typeHeaderHash, typeCustomAttributesHash, typeMembersHash);
+
+    ulong GetSuperTypesHash()
+    {
+      var typeBaseTypeHash = typeDefinition.BaseType.IsNil ? 0UL : GetOrComputeTypeUsageHash(typeDefinition.BaseType);
+      var typeImplementedInterfaceHashes = new List<ulong>();
+
+      foreach (var interfaceImplementationHandle in typeDefinition.GetInterfaceImplementations())
+      {
+        var interfaceImplementation = myMetadataReader.GetInterfaceImplementation(interfaceImplementationHandle);
+
+        // skip internal interface implementations
+        var topLevelTypeDefinitionHandle = TryGetTopLevelTypeDefinition(interfaceImplementation.Interface);
+        if (!topLevelTypeDefinitionHandle.IsNil)
+        {
+          var topLevelTypeDefinition = myMetadataReader.GetTypeDefinition(topLevelTypeDefinitionHandle);
+          if (!IsPartOfTheApiSurface(topLevelTypeDefinition))
+            continue;
+        }
+
+        var interfaceImplementationHash = GetOrComputeTypeUsageHash(interfaceImplementation.Interface);
+        var interfaceImplementationCustomAttributesHash = GetCustomAttributesSurfaceHash(interfaceImplementation.GetCustomAttributes());
+
+        typeImplementedInterfaceHashes.Add(LongHashCode.Combine(
+          interfaceImplementationHash, interfaceImplementationCustomAttributesHash));
+      }
+
+      typeImplementedInterfaceHashes.Sort();
+
+      return LongHashCode.Combine(typeBaseTypeHash, LongHashCode.Combine(typeImplementedInterfaceHashes));
+    }
+
+    [Pure]
+    TypeDefinitionHandle TryGetTopLevelTypeDefinition(EntityHandle entityHandle)
+    {
+      switch (entityHandle.Kind)
+      {
+        case HandleKind.TypeDefinition: // : I
+        {
+          return (TypeDefinitionHandle)entityHandle;
+        }
+
+        case HandleKind.TypeSpecification: // : I<X>
+        {
+          var interfaceTypeSpecification = myMetadataReader.GetTypeSpecification((TypeSpecificationHandle)entityHandle);
+          var signatureBlobReader = myMetadataReader.GetBlobReader(interfaceTypeSpecification.Signature);
+
+          var typeCode = (SignatureTypeCode)signatureBlobReader.ReadCompressedInteger();
+          if (typeCode != SignatureTypeCode.GenericTypeInstance) break;
+
+          var genericTypeCode = (SignatureTypeKind)signatureBlobReader.ReadCompressedInteger();
+          if (genericTypeCode != SignatureTypeKind.Class) break;
+
+          var typeHandle = signatureBlobReader.ReadTypeHandle();
+          if (typeHandle is { IsNil: false, Kind: HandleKind.TypeDefinition })
+          {
+            return (TypeDefinitionHandle)typeHandle;
+          }
+
+          break;
+        }
+      }
+
+      return default;
+    }
   }
 
   private ulong GetOrComputeConstantValueHash(ConstantHandle handle)

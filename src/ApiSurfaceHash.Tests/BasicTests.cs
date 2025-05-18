@@ -1,6 +1,4 @@
 ﻿using System.Diagnostics.Contracts;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using NUnit.Framework;
 
 // todo: generic attributes
@@ -389,6 +387,29 @@ public class BasicTests
       internal class A(int x) : System.Attribute;
       [A(2)] public class C;
       """);
+  }
+
+  [Test]
+  public void TestBaseTypes()
+  {
+    AssertSurfaceNotEqual(
+      "public enum S;",
+      "public struct S;",
+      "public class B; public class C;",
+      "public class B; public class C : B;",
+      "public interface I; public class C;",
+      "public interface I; public class C : I;",
+      "public interface I<T>; public class C : I<int>;",
+      "public interface I<T>; public class C : I<string>;",
+      "public interface I<T>; public class C : I<int>, I<string>;");
+
+    AssertSurfaceEqual(
+      "internal interface I; public class C;",
+      "internal interface I; public class C : I;");
+    AssertSurfaceEqual(
+      "internal interface I<T>; public class C : I<int>;",
+      "internal interface I<T>; public class C : I<bool>;",
+      "internal interface I<T>; public class C : I<int>, I<string>;");
   }
 
   [Test]
