@@ -369,6 +369,18 @@ public class BasicTests
   [Test]
   public void TestCustomAttributes()
   {
+    AssertSurfaceEqual(
+      """
+      internal class A(int x) : System.Attribute;
+      internal class B(int x) : System.Attribute;
+      [A(1), B(2)] public class C;
+      """,
+      """
+      internal class A(int x) : System.Attribute;
+      internal class B(int x) : System.Attribute;
+      [B(2), A(1)] public class C;
+      """);
+
     AssertSurfaceNotEqual(
       """
       public class A(int x) : System.Attribute;
@@ -386,6 +398,22 @@ public class BasicTests
       """
       internal class A(int x) : System.Attribute;
       [A(2)] public class C;
+      """);
+
+    AssertSurfaceNotEqual(
+      """
+      [A((int)42)]
+      public class A : System.Attribute {
+        public A(int x) { }
+        public A(uint x) { }
+      }
+      """,
+      """
+      [A((uint)42)]
+      public class A : System.Attribute {
+        public A(int x) { }
+        public A(uint x) { }
+      }
       """);
   }
 
