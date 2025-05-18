@@ -415,6 +415,10 @@ public class BasicTests
         public A(uint x) { }
       }
       """);
+
+    AssertSurfaceNotEqual(
+      "[A<int>] public class A<T> : System.Attribute;",
+      "[A<string>] public class A<T> : System.Attribute;");
   }
 
   [Test]

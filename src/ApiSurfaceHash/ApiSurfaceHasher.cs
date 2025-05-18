@@ -659,11 +659,14 @@ public class ApiSurfaceHasher
         case HandleKind.MemberReference:
         {
           var memberReference = myMetadataReader.GetMemberReference((MemberReferenceHandle)attribute.Constructor);
-          if (memberReference.Parent.Kind != HandleKind.TypeReference)
-            continue; // something unusual
+          if (memberReference.Parent.Kind is HandleKind.TypeReference or HandleKind.TypeSpecification)
+          {
+            // note: type spec for generic attributes
+            attributeOwnerTypeHash = GetOrComputeTypeUsageHash(memberReference.Parent);
+            break;
+          }
 
-          attributeOwnerTypeHash = GetOrComputeTypeReferenceHash((TypeReferenceHandle)memberReference.Parent);
-          break;
+          continue; // something unusual
         }
 
         case HandleKind.MethodDefinition:
