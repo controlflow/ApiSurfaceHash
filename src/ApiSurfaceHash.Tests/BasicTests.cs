@@ -369,6 +369,29 @@ public class BasicTests
   }
 
   [Test]
+  public void TestCustomAttributes()
+  {
+    AssertSurfaceNotEqual(
+      """
+      public class A(int x) : System.Attribute;
+      [A(1)] public class C;
+      """,
+      """
+      public class A(int x) : System.Attribute;
+      [A(2)] public class C;
+      """);
+    AssertSurfaceEqual(
+      """
+      internal class A(int x) : System.Attribute;
+      [A(1)] public class C;
+      """,
+      """
+      internal class A(int x) : System.Attribute;
+      [A(2)] public class C;
+      """);
+  }
+
+  [Test]
   public void TestGenericTypes()
   {
     AssertMemberSurfaceEqual(

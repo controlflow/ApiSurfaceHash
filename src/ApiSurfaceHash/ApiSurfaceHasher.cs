@@ -31,6 +31,7 @@ public class ApiSurfaceHasher
   private readonly Dictionary<StringHandle, ulong> myStringHashes = new();
   // todo: split to increase locality?
   private readonly Dictionary<EntityHandle, ulong> myHashes = new();
+  private bool myInternalsAreVisible;
 
   private const string InternalsVisibleToAttributeName = nameof(InternalsVisibleToAttribute);
   private const string SystemRuntimeCompilerServicesNamespace = "System.Runtime.CompilerServices";
@@ -278,10 +279,8 @@ public class ApiSurfaceHasher
     }
   }
 
-  // todo: nested types
-  // todo: generic type parameters
   [Pure]
-  private ulong GetTypeDefinitionSurfaceHash(TypeDefinition typeDefinition, bool includeInternals)
+  private ulong GetTypeDefinitionSurfaceHash(TypeDefinition typeDefinition)
   {
     var namespaceHash = GetOrComputeStringHash(typeDefinition.Namespace);
     var nameHash = GetOrComputeStringHash(typeDefinition.Name);
@@ -306,7 +305,7 @@ public class ApiSurfaceHasher
     {
       var fieldDefinition = myMetadataReader.GetFieldDefinition(fieldDefinitionHandle);
 
-      if (IsPartOfTheApiSurface(fieldDefinition.Attributes, includeInternals))
+      if (IsPartOfTheApiSurface(fieldDefinition.Attributes))
       {
         typeMemberHashes.Add(GetFieldDefinitionSurfaceHash(fieldDefinition));
       }
@@ -316,7 +315,7 @@ public class ApiSurfaceHasher
     {
       var methodDefinition = myMetadataReader.GetMethodDefinition(methodDefinitionHandle);
 
-      if (IsPartOfTheApiSurface(methodDefinition.Attributes, includeInternals))
+      if (IsPartOfTheApiSurface(methodDefinition.Attributes))
       {
         typeMemberHashes.Add(GetMethodDefinitionSurfaceHash(methodDefinition));
         surfaceMethods.Add(methodDefinitionHandle);
@@ -498,18 +497,16 @@ public class ApiSurfaceHasher
         case HandleKind.MemberReference:
         {
           var memberReference = myMetadataReader.GetMemberReference((MemberReferenceHandle)customAttribute.Constructor);
-
           if (memberReference.Parent.Kind == HandleKind.TypeReference)
           {
             var typeReference = myMetadataReader.GetTypeReference((TypeReferenceHandle)memberReference.Parent);
-
-            var s = myMetadataReader.GetString(typeReference.Name);
 
             if (GetOrComputeStringHash(typeReference.Name) == InternalsVisibleNameHash
                 && GetOrComputeStringHash(typeReference.Namespace) == CompilerServicesNamespaceHash
                 && myMetadataReader.StringComparer.Equals(typeReference.Name, InternalsVisibleToAttributeName)
                 && myMetadataReader.StringComparer.Equals(typeReference.Namespace, SystemRuntimeCompilerServicesNamespace))
             {
+              myInternalsAreVisible = true;
               return true;
             }
           }
@@ -531,6 +528,7 @@ public class ApiSurfaceHasher
               && myMetadataReader.StringComparer.Equals(typeDefinition.Name, InternalsVisibleToAttributeName)
               && myMetadataReader.StringComparer.Equals(typeDefinition.Namespace, SystemRuntimeCompilerServicesNamespace))
           {
+            myInternalsAreVisible = true;
             return true;
           }
 
@@ -563,6 +561,7 @@ public class ApiSurfaceHasher
           if (memberReference.Parent.Kind == HandleKind.TypeReference)
           {
             var typeReferenceHandle = (TypeReferenceHandle)memberReference.Parent;
+
             var typeReferenceHash = GetOrComputeTypeReferenceHash(typeReferenceHandle);
 
             hash = LongHashCode.Combine(hash, typeReferenceHash);
@@ -580,6 +579,12 @@ public class ApiSurfaceHasher
           var methodDefinition = myMetadataReader.GetMethodDefinition((MethodDefinitionHandle)customAttribute.Constructor);
 
           var typeDefinitionHandle = methodDefinition.GetDeclaringType();
+
+          // todo: more efficient?
+          var typeDefinition = myMetadataReader.GetTypeDefinition(typeDefinitionHandle);
+          if (!IsPartOfTheApiSurface(typeDefinition))
+            continue;
+
           var typeDefinitionHash = GetOrComputeTypeUsageHash(typeDefinitionHandle);
 
           hash = LongHashCode.Combine(hash, typeDefinitionHash);
@@ -623,10 +628,10 @@ public class ApiSurfaceHasher
       var ns = metadataReader.GetString(typeDefinition.Namespace);
       var fqn = (ns.Length == 0 ? "" : ns + ".") + metadataReader.GetString(typeDefinition.Name);
 
-      if (surfaceHasher.IsPartOfTheApiSurface(typeDefinition, internalsAreVisible))
+      if (surfaceHasher.IsPartOfTheApiSurface(typeDefinition))
       {
         typeHashes.Add(
-          surfaceHasher.GetTypeDefinitionSurfaceHash(typeDefinition, internalsAreVisible));
+          surfaceHasher.GetTypeDefinitionSurfaceHash(typeDefinition));
       }
     }
 
@@ -654,7 +659,7 @@ public class ApiSurfaceHasher
   }
 
   [Pure]
-  private bool IsPartOfTheApiSurface(TypeDefinition typeDefinition, bool includeInternals)
+  private bool IsPartOfTheApiSurface(TypeDefinition typeDefinition)
   {
     var accessRights = typeDefinition.Attributes & TypeAttributes.VisibilityMask;
 
@@ -663,7 +668,7 @@ public class ApiSurfaceHasher
     {
       var containingTypeDefinition = myMetadataReader.GetTypeDefinition(declaringTypeHandle);
 
-      if (!IsPartOfTheApiSurface(containingTypeDefinition, includeInternals))
+      if (!IsPartOfTheApiSurface(containingTypeDefinition))
         return false;
     }
 
@@ -677,9 +682,9 @@ public class ApiSurfaceHasher
         return true;
       }
 
-      case 0 when includeInternals: // internal
-      case TypeAttributes.NestedAssembly when includeInternals: // internal
-      case TypeAttributes.NestedFamANDAssem when includeInternals: // private protected
+      case 0 when myInternalsAreVisible: // internal
+      case TypeAttributes.NestedAssembly when myInternalsAreVisible: // internal
+      case TypeAttributes.NestedFamANDAssem when myInternalsAreVisible: // private protected
       {
         // compiler-generated types:
         //   - `<Module>`
@@ -704,7 +709,7 @@ public class ApiSurfaceHasher
   }
 
   [Pure]
-  private bool IsPartOfTheApiSurface(MethodAttributes methodAttributes, bool includeInternals)
+  private bool IsPartOfTheApiSurface(MethodAttributes methodAttributes)
   {
     methodAttributes &= MethodAttributes.MemberAccessMask;
 
@@ -713,8 +718,8 @@ public class ApiSurfaceHasher
       case MethodAttributes.Public:
       case MethodAttributes.Family:
       case MethodAttributes.FamORAssem:
-      case MethodAttributes.Assembly when includeInternals:
-      case MethodAttributes.FamANDAssem when includeInternals:
+      case MethodAttributes.Assembly when myInternalsAreVisible:
+      case MethodAttributes.FamANDAssem when myInternalsAreVisible:
         return true;
 
       default:
@@ -723,7 +728,7 @@ public class ApiSurfaceHasher
   }
 
   [Pure]
-  private bool IsPartOfTheApiSurface(FieldAttributes fieldAttributes, bool includeInternals)
+  private bool IsPartOfTheApiSurface(FieldAttributes fieldAttributes)
   {
     fieldAttributes &= FieldAttributes.FieldAccessMask;
 
@@ -732,8 +737,8 @@ public class ApiSurfaceHasher
       case FieldAttributes.Public:
       case FieldAttributes.Family:
       case FieldAttributes.FamORAssem:
-      case FieldAttributes.Assembly when includeInternals:
-      case FieldAttributes.FamANDAssem when includeInternals:
+      case FieldAttributes.Assembly when myInternalsAreVisible:
+      case FieldAttributes.FamANDAssem when myInternalsAreVisible:
         return true;
 
       default:
