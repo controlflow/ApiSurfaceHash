@@ -7,16 +7,11 @@ using System.Reflection.PortableExecutable;
 using System.Runtime.CompilerServices;
 using ApiSurfaceHash;
 
-// todo: class vs struct?
-// todo: detect popular FQNs with hash
-// todo: top-level code <Main>$ - ignore types/members starting from '<'
-// todo: init-only accessors breaking change
-// todo: required members breaking change (count of members changed)
 // todo: exported types
-// todo: scoped modifier
 // todo: delegate types
 // todo: record clone method
 // todo: type layout affects compilation?
+// todo: presence of managed references in structs
 // todo: getstring - remove all
 // todo: typeof(T) in attribute can reference internal/private type, via string
 
@@ -27,14 +22,20 @@ public class ApiSurfaceHasher
   private readonly Dictionary<StringHandle, ulong> myStringHashes = new();
   // todo: split to increase locality?
   private readonly Dictionary<EntityHandle, ulong> myHashes = new();
+  private readonly HashSet<EntityHandle> myIgnoredTypes = new();
   private bool myInternalsAreVisible;
 
   private const string InternalsVisibleToAttributeName = nameof(InternalsVisibleToAttribute);
+  private const string CompilerGeneratedAttributeName = nameof(CompilerGeneratedAttribute);
   private const string SystemRuntimeCompilerServicesNamespace = "System.Runtime.CompilerServices";
   private static readonly ulong CompilerServicesNamespaceHash
     = LongHashCode.FromUtf8String("System.Runtime.CompilerServices"u8);
-  private static readonly ulong InternalsVisibleNameHash
+  private static readonly ulong InternalsVisibleToAttributeNameHash
     = LongHashCode.FromUtf8String("InternalsVisibleToAttribute"u8);
+  private static readonly ulong CompilerGeneratedAttributeNameHash
+    = LongHashCode.FromUtf8String("CompilerGeneratedAttribute"u8);
+  private static readonly ulong CtorNameHash
+    = LongHashCode.FromUtf8String(".ctor"u8);
 
   private ApiSurfaceHasher(MetadataReader metadataReader)
   {
@@ -101,6 +102,7 @@ public class ApiSurfaceHasher
 
         var namespaceHash = GetOrComputeStringHash(typeDefinition.Namespace);
         var nameHash = GetOrComputeStringHash(typeDefinition.Name);
+        CheckAndStoreWellKnownType(namespaceHash, typeDefinition.Namespace, nameHash, typeDefinition.Name, handle);
 
         hash = LongHashCode.Combine(namespaceHash, nameHash);
 
@@ -126,6 +128,22 @@ public class ApiSurfaceHasher
     }
   }
 
+  private void CheckAndStoreWellKnownType(
+    ulong namespaceHash, StringHandle namespaceHandle, ulong nameHash, StringHandle nameHandle, EntityHandle handle)
+  {
+    // System.Runtime.CompilerServices
+    if (namespaceHash == CompilerServicesNamespaceHash
+        && myMetadataReader.StringComparer.Equals(namespaceHandle, SystemRuntimeCompilerServicesNamespace))
+    {
+      // [CompilerGenerated]
+      if (nameHash == CompilerGeneratedAttributeNameHash
+          && myMetadataReader.StringComparer.Equals(nameHandle, CompilerGeneratedAttributeName))
+      {
+        myIgnoredTypes.Add(handle);
+      }
+    }
+  }
+
   [Pure]
   private ulong GetOrComputeTypeReferenceHash(TypeReferenceHandle handle)
   {
@@ -138,6 +156,7 @@ public class ApiSurfaceHasher
 
     var namespaceHash = GetOrComputeStringHash(typeReference.Namespace);
     var nameHash = GetOrComputeStringHash(typeReference.Name);
+    CheckAndStoreWellKnownType(namespaceHash, typeReference.Namespace, nameHash, typeReference.Name, handle);
 
     var resolutionScope = typeReference.ResolutionScope;
     switch (resolutionScope.Kind)
@@ -357,20 +376,47 @@ public class ApiSurfaceHasher
       if (IsPartOfTheApiSurface(methodDefinition.Attributes))
       {
         typeMemberHashes.Add(GetMethodDefinitionSurfaceHash(methodDefinition));
-        apiSurfaceMethods.Add(methodDefinitionHandle);
+
+        if ((methodDefinition.Attributes & MethodAttributes.SpecialName) != 0
+            && GetOrComputeStringHash(methodDefinition.Name) != CtorNameHash)
+        {
+          // property/event accessors
+          apiSurfaceMethods.Add(methodDefinitionHandle);
+        }
       }
     }
 
-    // todo:
     foreach (var propertyDefinitionHandle in typeDefinition.GetProperties())
     {
       var propertyDefinition = myMetadataReader.GetPropertyDefinition(propertyDefinitionHandle);
 
-      var propertySignature = propertyDefinition.DecodeSignature(mySignatureHasher, genericContext: null);
-      // todo: lookup accessor methods
+      var propertyAccessors = propertyDefinition.GetAccessors();
+      if (apiSurfaceMethods.Contains(propertyAccessors.Getter)
+          || apiSurfaceMethods.Contains(propertyAccessors.Setter))
+      {
+        // note: the property type/indexer parameter type is already present in accessor signatures
+        var propertyNameHash = GetOrComputeStringHash(propertyDefinition.Name);
+        var propertyCustomAttributesHash = GetCustomAttributesSurfaceHash(propertyDefinition.GetCustomAttributes());
+
+        typeMemberHashes.Add(LongHashCode.Combine(propertyNameHash, propertyCustomAttributesHash));
+      }
     }
 
-    //typeDefinition.GetEvents();
+    foreach (var eventDefinitionHandle in typeDefinition.GetEvents())
+    {
+      var eventDefinition = myMetadataReader.GetEventDefinition(eventDefinitionHandle);
+
+      var eventAccessors = eventDefinition.GetAccessors();
+      if (apiSurfaceMethods.Contains(eventAccessors.Adder)
+          || apiSurfaceMethods.Contains(eventAccessors.Remover))
+      {
+        // note: the event type is already present in accessor signatures
+        var propertyNameHash = GetOrComputeStringHash(eventDefinition.Name);
+        var propertyCustomAttributesHash = GetCustomAttributesSurfaceHash(eventDefinition.GetCustomAttributes());
+
+        typeMemberHashes.Add(LongHashCode.Combine(propertyNameHash, propertyCustomAttributesHash));
+      }
+    }
 
     typeMemberHashes.Sort();
 
@@ -588,7 +634,7 @@ public class ApiSurfaceHasher
       methodAttributesHash, methodCombinedSignatureHash, methodParametersHash, methodCustomAttributesHash);
   }
 
-  private bool CheckHasInternalsVisibleTo(AssemblyDefinition assemblyDefinition)
+  private void CheckHasInternalsVisibleTo(AssemblyDefinition assemblyDefinition)
   {
     foreach (var customAttributeHandle in assemblyDefinition.GetCustomAttributes())
     {
@@ -599,22 +645,17 @@ public class ApiSurfaceHasher
         case HandleKind.MemberReference:
         {
           var memberReference = myMetadataReader.GetMemberReference((MemberReferenceHandle)customAttribute.Constructor);
-          if (memberReference.Parent.Kind == HandleKind.TypeReference)
-          {
-            var typeReference = myMetadataReader.GetTypeReference((TypeReferenceHandle)memberReference.Parent);
+          if (memberReference.Parent.Kind != HandleKind.TypeReference) continue;
 
-            if (GetOrComputeStringHash(typeReference.Name) == InternalsVisibleNameHash
-                && GetOrComputeStringHash(typeReference.Namespace) == CompilerServicesNamespaceHash
-                && myMetadataReader.StringComparer.Equals(typeReference.Name, InternalsVisibleToAttributeName)
-                && myMetadataReader.StringComparer.Equals(typeReference.Namespace, SystemRuntimeCompilerServicesNamespace))
-            {
-              myInternalsAreVisible = true;
-              return true;
-            }
-          }
-          else
+          var typeReference = myMetadataReader.GetTypeReference((TypeReferenceHandle)memberReference.Parent);
+
+          if (GetOrComputeStringHash(typeReference.Name) == InternalsVisibleToAttributeNameHash
+              && GetOrComputeStringHash(typeReference.Namespace) == CompilerServicesNamespaceHash
+              && myMetadataReader.StringComparer.Equals(typeReference.Name, InternalsVisibleToAttributeName)
+              && myMetadataReader.StringComparer.Equals(typeReference.Namespace, SystemRuntimeCompilerServicesNamespace))
           {
-            // todo: ?
+            myInternalsAreVisible = true;
+            return;
           }
 
           break;
@@ -625,21 +666,19 @@ public class ApiSurfaceHasher
           var methodDefinition = myMetadataReader.GetMethodDefinition((MethodDefinitionHandle)customAttribute.Constructor);
           var typeDefinition = myMetadataReader.GetTypeDefinition(methodDefinition.GetDeclaringType());
 
-          if (GetOrComputeStringHash(typeDefinition.Name) == InternalsVisibleNameHash
+          if (GetOrComputeStringHash(typeDefinition.Name) == InternalsVisibleToAttributeNameHash
               && GetOrComputeStringHash(typeDefinition.Namespace) == CompilerServicesNamespaceHash
               && myMetadataReader.StringComparer.Equals(typeDefinition.Name, InternalsVisibleToAttributeName)
               && myMetadataReader.StringComparer.Equals(typeDefinition.Namespace, SystemRuntimeCompilerServicesNamespace))
           {
             myInternalsAreVisible = true;
-            return true;
+            return;
           }
 
           break;
         }
       }
     }
-
-    return false;
   }
 
   // todo: not all attrs are part of the API "surface"? only special ones?
@@ -659,10 +698,21 @@ public class ApiSurfaceHasher
         case HandleKind.MemberReference:
         {
           var memberReference = myMetadataReader.GetMemberReference((MemberReferenceHandle)attribute.Constructor);
-          if (memberReference.Parent.Kind is HandleKind.TypeReference or HandleKind.TypeSpecification)
+
+          var memberParentTypeHandle = memberReference.Parent;
+          if (memberParentTypeHandle.Kind == HandleKind.TypeReference)
           {
-            // note: type spec for generic attributes
-            attributeOwnerTypeHash = GetOrComputeTypeUsageHash(memberReference.Parent);
+            attributeOwnerTypeHash = GetOrComputeTypeUsageHash(memberParentTypeHandle);
+
+            if (myIgnoredTypes.Contains(memberParentTypeHandle))
+              continue; // [CompilerGenerated], etc
+
+            break;
+          }
+
+          if (memberParentTypeHandle.Kind == HandleKind.TypeSpecification) // generic attributes
+          {
+            attributeOwnerTypeHash = GetOrComputeTypeUsageHash(memberParentTypeHandle);
             break;
           }
 
@@ -672,7 +722,6 @@ public class ApiSurfaceHasher
         case HandleKind.MethodDefinition:
         {
           var methodDefinition = myMetadataReader.GetMethodDefinition((MethodDefinitionHandle)attribute.Constructor);
-
           var typeDefinitionHandle = methodDefinition.GetDeclaringType();
 
           var typeDefinition = myMetadataReader.GetTypeDefinition(typeDefinitionHandle);
@@ -680,6 +729,10 @@ public class ApiSurfaceHasher
             continue;
 
           attributeOwnerTypeHash = GetOrComputeTypeUsageHash(typeDefinitionHandle);
+
+          if (myIgnoredTypes.Contains(typeDefinitionHandle))
+            continue; // [CompilerGenerated], etc
+
           break;
         }
 
@@ -711,14 +764,16 @@ public class ApiSurfaceHasher
     var surfaceHasher = new ApiSurfaceHasher(metadataReader);
 
     var assemblyDefinition = metadataReader.GetAssemblyDefinition();
-    var internalsAreVisible = surfaceHasher.CheckHasInternalsVisibleTo(assemblyDefinition);
+    var moduleDefinition = metadataReader.GetModuleDefinition();
+
+    // 1. check [assembly: InternalsVisibleTo] presence
+    surfaceHasher.CheckHasInternalsVisibleTo(assemblyDefinition);
+
+    // 2. hash assembly & module attributes
     var assemblyCustomAttributesSurfaceHash = surfaceHasher.GetCustomAttributesSurfaceHash(assemblyDefinition.GetCustomAttributes());
+    var moduleCustomAttributesSurfaceHash = surfaceHasher.GetCustomAttributesSurfaceHash(moduleDefinition.GetCustomAttributes());
 
-    // 1. hash assembly attributes and check [assembly: InternalsVisibleTo] presence
-    // 2. hash module attributes
-    // 3. hash types
-    // 4. hash embedded resources
-
+    // 3. hash surface types
     var typeHashes = new List<ulong>();
 
     foreach (var typeDefinitionHandle in metadataReader.TypeDefinitions)
@@ -735,6 +790,7 @@ public class ApiSurfaceHasher
       }
     }
 
+    // 4. hash embedded attributes
     foreach (var manifestResourceHandle in metadataReader.ManifestResources)
     {
       var manifestResource = metadataReader.GetManifestResource(manifestResourceHandle);
@@ -746,7 +802,12 @@ public class ApiSurfaceHasher
 
     typeHashes.Sort();
 
-    return LongHashCode.Combine(typeHashes);
+    var assemblyHash = LongHashCode.Combine(
+      assemblyCustomAttributesSurfaceHash,
+      moduleCustomAttributesSurfaceHash,
+      LongHashCode.Combine(typeHashes));
+
+    return assemblyHash;
   }
 
   [DebuggerStepThrough]

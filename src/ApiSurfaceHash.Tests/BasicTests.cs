@@ -1,10 +1,9 @@
 ﻿using System.Diagnostics.Contracts;
 using NUnit.Framework;
 
-// todo: generic attributes
-// todo: generic type usages
-
 namespace ApiSurfaceHash.Tests;
+
+// todo: NRT types
 
 [TestFixture]
 public class BasicTests
@@ -295,6 +294,9 @@ public class BasicTests
       "public void M(params int[] xs) { }",
       "public void M(System.Collections.Generic.IEnumerable<string> xs) { }",
       "public void M(params System.Collections.Generic.IEnumerable<string> xs) { }");
+    AssertSurfaceNotEqual( // scoped
+      "public ref struct S { public void M(S s) { } }",
+      "public ref struct S { public void M(scoped S s) { } }");
 
     // return type change
     AssertMemberSurfaceNotEqual(
@@ -354,6 +356,75 @@ public class BasicTests
       "public enum E { D, E, F }",
       "public enum E : byte { A, B, C }",
       "public enum E { A = 0, B = 1, C = 3 }");
+  }
+
+  [Test]
+  public void TestPropertySignatures()
+  {
+    AssertMemberSurfaceEqual(
+      "public int Property { get; }",
+      "public int Property => myField; private readonly int myField;",
+      "public int Property { get; private set; }",
+      "public int Property { get; private protected set; }",
+      "public int Property { get; internal set; }");
+    AssertMemberSurfaceEqual(
+      "public int Property { get; set; }",
+      "public int Property { get => myField; set => myField = value; } private int myField;");
+    AssertMemberSurfaceEqual(
+      "public int Property { get; init; }",
+      "public int Property { get => myField; init => myField = value; } private int myField;");
+    AssertMemberSurfaceEqual(
+      "public int this[int index] => 123;",
+      "public int this[int index] { get => 123; private set { } }",
+      "public int this[int index] { get => 123; private protected set { } }",
+      "public int this[int index] { get => 123; internal set { } }");
+
+    AssertMemberSurfaceNotEqual(
+      "public int Property { get; }",
+      "public int Property { get; set; }",
+      "public int Property { get; protected set; }",
+      "public int Property { get; protected internal set; }",
+      "public int Property { get; init; }",
+      "public int Property { get; protected init; }",
+      "public int Property { get; protected internal init; }",
+      "public required int Property { get; set; }",
+      "public required int Property { get; init; }");
+    AssertMemberSurfaceNotEqual(
+      "public class A : System.Attribute; public int Property { get; }",
+      "public class A : System.Attribute; [A] public int Property { get; }",
+      "public class A : System.Attribute; public int Property { [A] get; }");
+    AssertSurfaceNotEqual(
+      """
+      public class A {
+        public required int X { get; set; }
+        public int Y { get; set; }
+      }
+      """,
+      """
+      public class A {
+        public required int X { get; set; }
+        public required int Y { get; set; }
+      }
+      """);
+  }
+
+  [Test]
+  public void TestEventSignatures()
+  {
+    AssertMemberSurfaceEqual(
+      "public event System.EventHandler Event;",
+      "public event System.EventHandler Event = null;",
+      "public event System.EventHandler Event = delegate { };",
+      "public event System.EventHandler Event { add { } remove { } }");
+
+    AssertMemberSurfaceNotEqual(
+      "public event System.EventHandler Event;",
+      "public event System.EventHandler? Event;",
+      "public event System.Action Event;",
+      "public class A : System.Attribute; public event System.EventHandler Event;",
+      "public class A : System.Attribute; [A] public event System.EventHandler Event;",
+      "public class A : System.Attribute; public event System.EventHandler Event { [A] add { } remove { } }",
+      "public class A : System.Attribute; public event System.EventHandler Event { add { } [A] remove { } }");
   }
 
   [Test]
