@@ -3,8 +3,6 @@ using NUnit.Framework;
 
 namespace ApiSurfaceHash.Tests;
 
-// todo: NRT types
-
 [TestFixture]
 public class BasicTests
 {
@@ -406,6 +404,15 @@ public class BasicTests
         public required int Y { get; set; }
       }
       """);
+
+    AssertMemberSurfaceNotEqual( // NRT types
+      "public string Property { get; }",
+      "public string? Property { get; }",
+      "public string[] Property { get; }",
+      "public string[]? Property { get; }",
+      "public string?[] Property { get; }",
+      "public string[,]? Property { get; }",
+      "public string?[,] Property { get; }");
   }
 
   [Test]
@@ -636,6 +643,22 @@ public class BasicTests
       """);
   }
 
+  [Test]
+  public void TestBlittableStructs()
+  {
+    // managed vs. unmanaged struct types
+    AssertSurfaceEqual(
+      "public struct S { private int myField; }",
+      "public struct S { private int myField; private int myField2; }");
+    AssertSurfaceNotEqual(
+      "public struct S { private int myField; }",
+      "public struct S { private int myField; private string myField2; }");
+
+    // Nullable<InternalStruct>
+  }
+
+  #region Assertion API
+
   private void AssertSurfaceEqual(params IReadOnlyList<string> sourceCodes)
   {
     if (sourceCodes.Count == 0)
@@ -756,4 +779,6 @@ public class BasicTests
     var peBytes = myCompiler.Compile(string.Format(template, member));
     return ApiSurfaceHasher.Execute(peBytes);
   }
+
+  #endregion
 }
