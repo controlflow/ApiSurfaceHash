@@ -646,15 +646,35 @@ public class BasicTests
   [Test]
   public void TestBlittableStructs()
   {
-    // managed vs. unmanaged struct types
-    AssertSurfaceEqual(
-      "public struct S { private int myField; }",
-      "public struct S { private int myField; private int myField2; }");
+    // all fields of structs are indexed
     AssertSurfaceNotEqual(
       "public struct S { private int myField; }",
-      "public struct S { private int myField; private string myField2; }");
+      "public struct S { private int myField; private int myField2; }",
+      "public struct S { private int myField; private string myField2; }",
+      "public struct S { private int? myField; private string myField2; }");
+    AssertSurfaceEqual( // names are not hashed, only types
+      "public struct S { private int myField1; private int myField2; }",
+      "public struct S { private int myField1111; private int myField2222; }");
 
-    // Nullable<InternalStruct>
+    // embedded non-public struct
+    AssertSurfaceNotEqual(
+      """
+      internal struct P { private int myField; }
+      public struct S { private P? myNestedStruct; private int myValue; }
+      """,
+      """
+      internal struct P { private bool myField; }
+      public struct S { private P? myNestedStruct; private int myValue; }
+      """);
+    AssertSurfaceEqual( // statics are excluded
+      """
+      internal struct P { private int myField; private static string myText; }
+      public struct S { private P? myNestedStruct; private int myValue; private static string myText; }
+      """,
+      """
+      internal struct P { private int myField; private static string myText; }
+      public struct S { private P? myNestedStruct; private int myValue; private static string myText; }
+      """);
   }
 
   #region Assertion API

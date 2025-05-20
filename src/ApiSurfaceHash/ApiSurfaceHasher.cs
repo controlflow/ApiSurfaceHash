@@ -11,7 +11,6 @@ using ApiSurfaceHash;
 // todo: delegate types
 // todo: record clone method
 // todo: type layout affects compilation? -- seems unlikely?
-// todo: presence of managed references in structs
 // todo: getstring - remove all
 // todo: typeof(T) in attribute can reference internal/private type, via string
 // todo: SAMs tests
@@ -26,7 +25,7 @@ public class ApiSurfaceHasher
   private readonly Dictionary<StringHandle, ulong> myStringHashes = new();
   // todo: split to increase locality?
   private readonly Dictionary<EntityHandle, ulong> myHashes = new();
-  private readonly Dictionary<TypeDefinitionHandle, ulong> myStructToFieldsHash = new();
+  private readonly Dictionary<TypeDefinitionHandle, ulong> myStructFieldTypeHashes = new();
   private readonly HashSet<EntityHandle> myIgnoredTypes = new();
   private EntityHandle mySystemValueTypeClassHandle;
   private bool myInternalsAreVisible;
@@ -199,13 +198,14 @@ public class ApiSurfaceHasher
         {
           typeMemberHashes.Add(ComputeFieldDefinitionSurfaceHash(fieldDefinition));
         }
-        else if (isValueType)
+
+        // in structs we have to include the types of all the instance fields
+        // to track breaking changes like definite assignment errors for empty vs. non-empty structs
+        // and `unmanaged` generic constraint checking (has managed references or not)
+        if (isValueType
+            && (fieldDefinition.Attributes & FieldAttributes.Static) == 0)
         {
-          // todo:
-
-          // must include field type
-
-          // todo: can include internal structs from the same assembly
+          typeMemberHashes.Add(GetOrComputeStructFieldTypeHash(fieldDefinition));
         }
       }
     }
@@ -699,6 +699,8 @@ public class ApiSurfaceHasher
   private class SignatureHasher(ApiSurfaceHasher surfaceHasher)
     : ISignatureTypeProvider<ulong, object?>
   {
+    protected readonly ApiSurfaceHasher SurfaceHasher = surfaceHasher;
+
     ulong ISimpleTypeProvider<ulong>.GetPrimitiveType(PrimitiveTypeCode typeCode)
     {
       return (ulong)typeCode; // use code itself as a hash
@@ -706,12 +708,12 @@ public class ApiSurfaceHasher
 
     public virtual ulong GetTypeFromDefinition(MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind)
     {
-      return surfaceHasher.GetOrComputeTypeUsageHash(handle);
+      return SurfaceHasher.GetOrComputeTypeUsageHash(handle);
     }
 
     public ulong GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind)
     {
-      return surfaceHasher.GetOrComputeTypeReferenceHash(handle);
+      return SurfaceHasher.GetOrComputeTypeReferenceHash(handle);
     }
 
     public ulong GetGenericInstantiation(ulong genericTypeHash, ImmutableArray<ulong> typeArgumentsHashes)
@@ -784,9 +786,50 @@ public class ApiSurfaceHasher
   #endregion
   #region Struct fields hashing
 
-  private void M()
+  private ulong GetOrComputeStructFieldTypeHash(FieldDefinition fieldDefinition)
   {
-    
+    return fieldDefinition.DecodeSignature(myStructFieldTypesHasher, genericContext: null);
+  }
+
+  private ulong GetOrComputeNestedStructFieldTypesHash(TypeDefinitionHandle typeDefinitionHandle)
+  {
+    if (myStructFieldTypeHashes.TryGetValue(typeDefinitionHandle, out var hash)) return hash;
+
+    var typeDefinition = myMetadataReader.GetTypeDefinition(typeDefinitionHandle);
+
+    var isValueType = false;
+
+    var typeDefinitionBaseType = typeDefinition.BaseType;
+    if (!typeDefinitionBaseType.IsNil)
+    {
+      _ = GetOrComputeTypeUsageHash(typeDefinitionBaseType);
+      isValueType = mySystemValueTypeClassHandle == typeDefinitionBaseType;
+    }
+
+    if (isValueType) // note: do not include enums
+    {
+      var fieldHashes = new List<ulong>();
+
+      foreach (var fieldDefinitionHandle in typeDefinition.GetFields())
+      {
+        // we are only interested in instance fields
+        var structFieldDefinition = myMetadataReader.GetFieldDefinition(fieldDefinitionHandle);
+        if ((structFieldDefinition.Attributes & FieldAttributes.Static) == 0)
+        {
+          fieldHashes.Add(GetOrComputeStructFieldTypeHash(structFieldDefinition));
+        }
+      }
+
+      fieldHashes.Sort();
+
+      hash = LongHashCode.Combine(fieldHashes);
+    }
+    else
+    {
+      hash = GetOrComputeTypeUsageHash(typeDefinitionHandle);
+    }
+
+    return myStructFieldTypeHashes[typeDefinitionHandle] = hash;
   }
 
   private sealed class StructFieldTypesHasher(ApiSurfaceHasher surfaceHasher)
@@ -795,11 +838,7 @@ public class ApiSurfaceHasher
     public override ulong GetTypeFromDefinition(
       MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind)
     {
-      
-
-      //
-
-      return 0UL;
+      return SurfaceHasher.GetOrComputeNestedStructFieldTypesHash(handle);
     }
   }
 
