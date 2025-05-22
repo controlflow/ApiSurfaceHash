@@ -64,6 +64,11 @@ public class BasicTests
       "public interface N;",
       "public enum N;",
       "public delegate void N();");
+
+    // nested type containing type change
+    AssertSurfaceNotEqual(
+      "public class A { public class N; } public class B;",
+      "public class A; public class B { public class N; }");
   }
 
   [Test]

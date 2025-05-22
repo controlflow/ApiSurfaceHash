@@ -146,13 +146,18 @@ public class ApiSurfaceHasher
     var typeSuperTypesHash = GetSuperTypesHash(out var isValueType);
     var typeTypeParametersHash = GetTypeParametersSurfaceHash(typeDefinition.GetGenericParameters());
 
+    // nested types hash must include a reference to it's containing type
+    var typeContainingTypeHandle = typeDefinition.GetDeclaringType();
+    var typeContainingTypeUsageHash = !typeContainingTypeHandle.IsNil
+      ? GetOrComputeTypeUsageHash(typeContainingTypeHandle) : 0UL;
+
     var typeMemberHashes = new List<ulong>();
     var apiSurfaceMethods = new HashSet<MethodDefinitionHandle>();
 
-    ScanFieldDefinitions();
-    ScanMethodDefinitions();
-    ScanPropertyDefinitions();
-    ScanEventDefinitions();
+    HashFieldDefinitions();
+    HashMethodDefinitions();
+    HashPropertyDefinitions();
+    HashEventDefinitions();
 
     typeMemberHashes.Sort();
 
@@ -162,7 +167,7 @@ public class ApiSurfaceHasher
       typeAttributesHash, typeNamespaceHash, typeNameHash, typeTypeParametersHash, typeSuperTypesHash);
     var typeMembersHash = LongHashCode.Combine(typeMemberHashes);
 
-    return LongHashCode.Combine(typeHeaderHash, typeCustomAttributesHash, typeMembersHash);
+    return LongHashCode.Combine(typeHeaderHash, typeContainingTypeUsageHash, typeCustomAttributesHash, typeMembersHash);
 
     ulong GetSuperTypesHash(out bool baseClassIsSystemValueType)
     {
@@ -202,7 +207,7 @@ public class ApiSurfaceHasher
       return LongHashCode.Combine(typeBaseTypeHash, LongHashCode.Combine(typeImplementedInterfaceHashes));
     }
 
-    void ScanFieldDefinitions()
+    void HashFieldDefinitions()
     {
       foreach (var fieldDefinitionHandle in typeDefinition.GetFields())
       {
@@ -213,7 +218,7 @@ public class ApiSurfaceHasher
           typeMemberHashes.Add(ComputeFieldDefinitionSurfaceHash(fieldDefinition));
         }
 
-        // in structs we have to include the types of all the instance fields
+        // for struct declarations we have to include the types of all the instance fields
         // to track breaking changes like definite assignment errors for empty vs. non-empty structs
         // and `unmanaged` generic constraint checking (has managed references or not)
         if (isValueType
@@ -224,7 +229,7 @@ public class ApiSurfaceHasher
       }
     }
 
-    void ScanMethodDefinitions()
+    void HashMethodDefinitions()
     {
       foreach (var methodDefinitionHandle in typeDefinition.GetMethods())
       {
@@ -244,7 +249,7 @@ public class ApiSurfaceHasher
       }
     }
 
-    void ScanPropertyDefinitions()
+    void HashPropertyDefinitions()
     {
       foreach (var propertyDefinitionHandle in typeDefinition.GetProperties())
       {
@@ -263,7 +268,7 @@ public class ApiSurfaceHasher
       }
     }
 
-    void ScanEventDefinitions()
+    void HashEventDefinitions()
     {
       foreach (var eventDefinitionHandle in typeDefinition.GetEvents())
       {
@@ -403,7 +408,11 @@ public class ApiSurfaceHasher
   [Pure]
   private ulong ComputeExportedTypeDefinitionSurfaceHash(ExportedType exportedTypeHandle)
   {
+    var implementationHandle = exportedTypeHandle.Implementation;
 
+    //exportedTypeHandle.
+    
+    //GetOrComputeTypeUsageHash(ex)
     // TODO: FQN
     return 0;
   }
