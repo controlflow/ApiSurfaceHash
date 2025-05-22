@@ -24,6 +24,17 @@ internal static class LongHashCode
   }
 
   [Pure]
+  public static unsafe ulong FromBlob(byte[] blob)
+  {
+    if (blob.Length == 0) return FnvOffset;
+
+    fixed (byte* ptr = &blob[0])
+    {
+      return FromBlob(ptr, blob.Length);
+    }
+  }
+
+  [Pure]
   public static unsafe ulong FromBlob(byte* bytePtr, int length)
   {
     unchecked

@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 
 // todo: GetString - remove all
 // todo: typeof(T) in attribute can reference internal/private type, via string; how enum values are stored?
@@ -83,9 +84,10 @@ public class AssemblyHasher
     foreach (var manifestResourceHandle in metadataReader.ManifestResources)
     {
       var manifestResource = metadataReader.GetManifestResource(manifestResourceHandle);
-      if ((manifestResource.Attributes & ManifestResourceAttributes.Public) != 0)
+
+      if (surfaceHasher.IsPartOfTheApiSurface(manifestResource, assemblyDefinition))
       {
-        // manifestResource.Name; - match
+        typeHashes.Add(ComputeResourceStreamContentsHash(peReader, manifestResource));
       }
     }
 
@@ -117,7 +119,8 @@ public class AssemblyHasher
 
   public static ulong Run(Stream peStream)
   {
-    using var peReader = new PEReader(peStream, PEStreamOptions.PrefetchMetadata);
+    // note: cannot use `PrefetchMetadata` options because of F# resources
+    using var peReader = new PEReader(peStream);
 
     return Run(peReader);
   }
@@ -896,6 +899,28 @@ public class AssemblyHasher
   }
 
   #endregion
+  #region Resource stream hashing
+
+  [Pure]
+  private static unsafe ulong ComputeResourceStreamContentsHash(PEReader peReader, ManifestResource manifestResource)
+  {
+    var corHeader = peReader.PEHeaders.CorHeader ?? throw new BadImageFormatException();
+    var resourcesSection = peReader.GetSectionData(corHeader.ResourcesDirectory.RelativeVirtualAddress);
+
+    var resourcePtr = resourcesSection.Pointer + manifestResource.Offset;
+    var resourceLength = *(int*)resourcePtr;
+    resourcePtr += sizeof(int);
+
+    // hash entire resource using MD5
+    using var md5Hasher = MD5.Create();
+    using var resourceStream = new UnmanagedMemoryStream(resourcePtr, resourceLength);
+
+    var hash = md5Hasher.ComputeHash(resourceStream);
+
+    return LongHashCode.FromBlob(hash); // collapse into ulong
+  }
+
+  #endregion
   #region Leafs hashing
 
   private ulong GetOrComputeStringHash(StringHandle handle)
@@ -1067,6 +1092,28 @@ public class AssemblyHasher
       {
         return true;
       }
+    }
+
+    return false;
+  }
+
+  [Pure]
+  private bool IsPartOfTheApiSurface(ManifestResource manifestResource, AssemblyDefinition assemblyDefinition)
+  {
+    if ((manifestResource.Attributes & ManifestResourceAttributes.Public) == 0)
+      return false;
+
+    var stringComparer = myMetadataReader.StringComparer;
+    if (stringComparer.StartsWith(manifestResource.Name, "FSharpSignatureInfo.")
+        || stringComparer.StartsWith(manifestResource.Name, "FSharpSignatureData.")
+        || stringComparer.StartsWith(manifestResource.Name, "FSharpSignatureCompressedData."))
+    {
+      // not necessary, but why not
+      var resourceName = myMetadataReader.GetString(manifestResource.Name);
+      var assemblyName = myMetadataReader.GetString(assemblyDefinition.Name);
+
+      if (resourceName.EndsWith(assemblyName, StringComparison.Ordinal))
+        return true;
     }
 
     return false;
