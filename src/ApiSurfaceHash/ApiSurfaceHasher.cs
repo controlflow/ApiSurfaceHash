@@ -7,15 +7,15 @@ using System.Reflection.PortableExecutable;
 using System.Runtime.CompilerServices;
 using ApiSurfaceHash;
 
+// todo: smoke test
 // todo: exported types
-// todo: delegate types
 // todo: record clone method
-// todo: type layout affects compilation? -- seems unlikely?
 // todo: getstring - remove all
-// todo: typeof(T) in attribute can reference internal/private type, via string
+// todo: typeof(T) in attribute can reference internal/private type, via string; how enum values are stored?
 // todo: SAMs tests
 // todo: explicit interface impls
 // todo: should internal attrs be stripped despite [InternalsVisibleTo]?
+// todo: how nested types are hashed? declared type change?
 
 public class ApiSurfaceHasher
 {
@@ -39,10 +39,8 @@ public class ApiSurfaceHasher
 
   #region Entry point
 
-  public static unsafe ulong Execute(byte* imagePtr, int imageLength)
+  public static ulong Execute(PEReader peReader)
   {
-    using var peReader = new PEReader(imagePtr, imageLength);
-
     var metadataReader = peReader.GetMetadataReader(MetadataReaderOptions.Default);
 
     var surfaceHasher = new ApiSurfaceHasher(metadataReader);
@@ -64,13 +62,12 @@ public class ApiSurfaceHasher
     {
       var typeDefinition = metadataReader.GetTypeDefinition(typeDefinitionHandle);
 
-      var ns = metadataReader.GetString(typeDefinition.Namespace);
-      var fqn = (ns.Length == 0 ? "" : ns + ".") + metadataReader.GetString(typeDefinition.Name);
+      //var ns = metadataReader.GetString(typeDefinition.Namespace);
+      //var fqn = (ns.Length == 0 ? "" : ns + ".") + metadataReader.GetString(typeDefinition.Name);
 
       if (surfaceHasher.IsPartOfTheApiSurface(typeDefinition))
       {
-        typeHashes.Add(
-          surfaceHasher.ComputeTypeDefinitionSurfaceHash(typeDefinition));
+        typeHashes.Add(surfaceHasher.ComputeTypeDefinitionSurfaceHash(typeDefinition));
       }
     }
 
@@ -79,7 +76,10 @@ public class ApiSurfaceHasher
     {
       var exportedType = metadataReader.GetExportedType(exportedTypeHandle);
 
-      //exportedType.
+      if (surfaceHasher.IsPartOfTheApiSurface(exportedType))
+      {
+        typeHashes.Add(surfaceHasher.ComputeExportedTypeDefinitionSurfaceHash(exportedType));
+      }
     }
 
     // 5. hash embedded attributes
@@ -102,6 +102,13 @@ public class ApiSurfaceHasher
     return assemblyHash;
   }
 
+  public static unsafe ulong Execute(byte* imagePtr, int imageLength)
+  {
+    using var peReader = new PEReader(imagePtr, imageLength);
+
+    return Execute(peReader);
+  }
+
   [DebuggerStepThrough]
   public static unsafe ulong Execute(Span<byte> assemblyBytes)
   {
@@ -109,6 +116,13 @@ public class ApiSurfaceHasher
     {
       return Execute(ptr, assemblyBytes.Length);
     }
+  }
+
+  public static ulong Execute(Stream peStream)
+  {
+    using var peReader = new PEReader(peStream, PEStreamOptions.PrefetchMetadata);
+
+    return Execute(peReader);
   }
 
   #endregion
@@ -384,6 +398,14 @@ public class ApiSurfaceHasher
 
     return LongHashCode.Combine(
       methodAttributesHash, methodCombinedSignatureHash, methodParametersHash, methodCustomAttributesHash);
+  }
+
+  [Pure]
+  private ulong ComputeExportedTypeDefinitionSurfaceHash(ExportedType exportedTypeHandle)
+  {
+
+    // TODO: FQN
+    return 0;
   }
 
   #endregion
@@ -985,6 +1007,38 @@ public class ApiSurfaceHasher
       default:
         return false;
     }
+  }
+
+  [Pure]
+  private bool IsPartOfTheApiSurface(ExportedType exportedType)
+  {
+    var accessRights = exportedType.Attributes & TypeAttributes.VisibilityMask;
+
+    // nested exported type
+    var implementationHandle = exportedType.Implementation;
+    if (implementationHandle.Kind == HandleKind.ExportedType)
+    {
+      var containingExportedType = myMetadataReader.GetExportedType((ExportedTypeHandle)implementationHandle);
+
+      if (!IsPartOfTheApiSurface(containingExportedType))
+        return false;
+    }
+
+    switch (accessRights)
+    {
+      case TypeAttributes.Public:
+      case TypeAttributes.NestedPublic:
+      case TypeAttributes.NestedFamily: // protected
+      case TypeAttributes.NestedFamORAssem: // protected internal
+      case 0 when myInternalsAreVisible: // internal
+      case TypeAttributes.NestedAssembly when myInternalsAreVisible: // internal
+      case TypeAttributes.NestedFamANDAssem when myInternalsAreVisible: // private protected
+      {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   // todo: can we make it nicer?

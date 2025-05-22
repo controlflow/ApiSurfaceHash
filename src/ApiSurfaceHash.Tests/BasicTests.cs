@@ -1,7 +1,12 @@
 ﻿using System.Diagnostics.Contracts;
+using System.IO.Compression;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using NUnit.Framework;
 
 namespace ApiSurfaceHash.Tests;
+
+// todo: test [Serializable] add/remove
 
 [TestFixture]
 public class BasicTests
@@ -675,6 +680,64 @@ public class BasicTests
       internal struct P { private int myField; private static string myText; }
       public struct S { private P? myNestedStruct; private int myValue; private static string myText; }
       """);
+  }
+
+  [Test]
+  public void TestSmoke()
+  {
+    Type[] sampleTypes = [
+      typeof(object), typeof(DynamicAttribute), typeof(Task), typeof(IEnumerable<>), typeof(Console)
+    ];
+
+    var locations = sampleTypes
+      .Select(type => type.Assembly).Distinct()
+      .Select(assembly => assembly.Location).ToList();
+
+    var thisAssembly = Assembly.GetExecutingAssembly();
+    var assemblyName = thisAssembly.GetName().Name;
+    var directory = new DirectoryInfo(
+      Path.GetDirectoryName(thisAssembly.Location) ?? throw new ArgumentException());
+
+    while (!directory.Name.Equals(assemblyName, StringComparison.OrdinalIgnoreCase))
+    {
+      directory = directory.Parent ?? throw new ArgumentException();
+    }
+
+    var smokeDir = Path.Combine(directory.FullName, "smoke");
+    locations.AddRange(Directory.EnumerateFiles(smokeDir, "*.dll", SearchOption.AllDirectories));
+    locations.AddRange(Directory.EnumerateFiles(smokeDir, "*.zip", SearchOption.AllDirectories));
+
+    foreach (var location in locations)
+    {
+      using var fileStream = File.OpenRead(location);
+
+      // dig inside zip archive
+      if (string.Equals(Path.GetExtension(location), ".zip", StringComparison.OrdinalIgnoreCase))
+      {
+        var zipArchive = new ZipArchive(fileStream, ZipArchiveMode.Read);
+
+        foreach (var entry in zipArchive.Entries)
+        {
+          if (string.Equals(Path.GetExtension(entry.Name), ".dll", StringComparison.OrdinalIgnoreCase))
+          {
+            using var memoryStream = new MemoryStream();
+
+            using (var entryStream = entry.Open())
+            {
+              entryStream.CopyTo(memoryStream);
+            }
+
+            memoryStream.Position = 0;
+
+            _ = ApiSurfaceHasher.Execute(memoryStream);
+          }
+        }
+      }
+      else
+      {
+        _ = ApiSurfaceHasher.Execute(fileStream);
+      }
+    }
   }
 
   #region Assertion API
