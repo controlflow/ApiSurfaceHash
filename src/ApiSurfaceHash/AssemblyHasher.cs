@@ -864,6 +864,9 @@ public class AssemblyHasher
 
     if (isValueType) // note: do not include enums
     {
+      // in mscorlib `System.Int32` has a field of type `System.Int32`, avoid SO
+      myStructFieldTypeHashes[typeDefinitionHandle] = LongHashCode.FnvOffset;
+
       var fieldHashes = new List<ulong>();
 
       foreach (var fieldDefinitionHandle in typeDefinition.GetFields())
