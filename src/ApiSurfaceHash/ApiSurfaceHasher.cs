@@ -128,21 +128,21 @@ public class ApiSurfaceHasher
   #endregion
   #region Definitions hashing
 
+  private const TypeAttributes TypeApiSurfaceAttributes =
+    TypeAttributes.Abstract
+    | TypeAttributes.Sealed
+    | TypeAttributes.SpecialName
+    | TypeAttributes.RTSpecialName
+    | TypeAttributes.ClassSemanticsMask // interface or not
+    | TypeAttributes.VisibilityMask;
+
   [Pure]
   private ulong ComputeTypeDefinitionSurfaceHash(TypeDefinition typeDefinition)
   {
     var typeNamespaceHash = GetOrComputeStringHash(typeDefinition.Namespace);
     var typeNameHash = GetOrComputeStringHash(typeDefinition.Name);
 
-    const TypeAttributes apiSurfaceAttributes =
-      TypeAttributes.Abstract
-      | TypeAttributes.Sealed
-      | TypeAttributes.SpecialName
-      | TypeAttributes.RTSpecialName
-      | TypeAttributes.ClassSemanticsMask // interface or not
-      | TypeAttributes.VisibilityMask;
-
-    var typeAttributesHash = (ulong)(typeDefinition.Attributes & apiSurfaceAttributes);
+    var typeAttributesHash = (ulong)(typeDefinition.Attributes & TypeApiSurfaceAttributes);
     var typeSuperTypesHash = GetSuperTypesHash(out var isValueType);
     var typeTypeParametersHash = GetTypeParametersSurfaceHash(typeDefinition.GetGenericParameters());
 
@@ -406,15 +406,40 @@ public class ApiSurfaceHasher
   }
 
   [Pure]
-  private ulong ComputeExportedTypeDefinitionSurfaceHash(ExportedType exportedTypeHandle)
+  private ulong ComputeExportedTypeDefinitionSurfaceHash(ExportedType exportedType)
   {
-    var implementationHandle = exportedTypeHandle.Implementation;
+    var typeAttributesHash = (ulong)(exportedType.Attributes & TypeApiSurfaceAttributes);
 
-    //exportedTypeHandle.
-    
-    //GetOrComputeTypeUsageHash(ex)
-    // TODO: FQN
-    return 0;
+    // var s1 = myMetadataReader.GetString(exportedType.Name);
+    // var s2 = myMetadataReader.GetString(exportedType.NamespaceDefinition);
+
+    var typeNameHash = GetOrComputeStringHash(exportedType.Name);
+    var typeNamespaceHash = GetOrComputeStringHash(exportedType.Namespace);
+    var typeCustomAttributesHash = ComputeCustomAttributesSurfaceHash(exportedType.GetCustomAttributes());
+    var exportedTypeHash = LongHashCode.Combine(
+      typeAttributesHash, typeNameHash, typeNamespaceHash, typeCustomAttributesHash);
+
+    var implementationHandle = exportedType.Implementation;
+    switch (implementationHandle.Kind)
+    {
+      case HandleKind.AssemblyReference:
+      {
+        var assemblyReferenceHash = GetOrComputeAssemblyReferenceHash((AssemblyReferenceHandle)implementationHandle);
+
+        return LongHashCode.Combine(exportedTypeHash, assemblyReferenceHash);
+      }
+
+      case HandleKind.ExportedType:
+      {
+        var containingExportedType = myMetadataReader.GetExportedType((ExportedTypeHandle)implementationHandle);
+        var containingExportedTypeHash = ComputeExportedTypeDefinitionSurfaceHash(containingExportedType);
+
+        return LongHashCode.Combine(exportedTypeHash, containingExportedTypeHash);
+      }
+
+      default:
+        throw new ArgumentOutOfRangeException();
+    }
   }
 
   #endregion
