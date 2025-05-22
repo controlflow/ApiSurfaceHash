@@ -6,7 +6,6 @@ using NUnit.Framework;
 
 namespace ApiSurfaceHash.Tests;
 
-// todo: test [Serializable] add/remove? other pseudo-attributes?
 // todo: vary compiler options?
 
 [TestFixture]
@@ -508,6 +507,40 @@ public class BasicTests
     AssertSurfaceNotEqual(
       "[A<int>] public class A<T> : System.Attribute;",
       "[A<string>] public class A<T> : System.Attribute;");
+  }
+
+  [Test]
+  public void TestPseudoAttributes()
+  {
+    AssertSurfaceEqual(
+      "public class C;",
+      "[System.Serializable] public class C;");
+    AssertSurfaceEqual(
+      "public class C { public int Field; }",
+      "public class C { [System.NonSerialized] public int Field; }");
+
+    // `get_Item` -> `get_A`
+    AssertSurfaceNotEqual(
+      """
+      public class C {
+        public int this[int index] => index;
+      }
+      """,
+      """
+      public class C {
+        [System.Runtime.CompilerServices.IndexerName("A")]
+        public int this[int index] => index;
+      }
+      """);
+
+    AssertSurfaceEqual(
+      "public class C { public string Text; }",
+      """
+      using System.Runtime.InteropServices;
+      public class C {
+        [MarshalAs(UnmanagedType.LPWStr)] public string Text;
+      }
+      """);
   }
 
   [Test]
