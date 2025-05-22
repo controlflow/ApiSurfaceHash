@@ -2,8 +2,6 @@ using System.Collections.Immutable;
 using System.Diagnostics.Contracts;
 using System.Reflection.Metadata;
 
-namespace ApiSurfaceHash;
-
 internal static class LongHashCode
 {
   public const ulong FnvOffset = 14695981039346656037UL;

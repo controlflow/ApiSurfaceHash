@@ -6,7 +6,8 @@ using NUnit.Framework;
 
 namespace ApiSurfaceHash.Tests;
 
-// todo: test [Serializable] add/remove
+// todo: test [Serializable] add/remove? other pseudo-attributes?
+// todo: vary compiler options?
 
 [TestFixture]
 public class BasicTests
@@ -716,7 +717,7 @@ public class BasicTests
     {
       using var fileStream = File.OpenRead(location);
 
-      // dig inside zip archive
+      // dig inside the zip archive
       if (string.Equals(Path.GetExtension(location), ".zip", StringComparison.OrdinalIgnoreCase))
       {
         var zipArchive = new ZipArchive(fileStream, ZipArchiveMode.Read);
@@ -734,13 +735,13 @@ public class BasicTests
 
             memoryStream.Position = 0;
 
-            _ = ApiSurfaceHasher.Execute(memoryStream);
+            _ = AssemblyHasher.Run(memoryStream);
           }
         }
       }
       else
       {
-        _ = ApiSurfaceHasher.Execute(fileStream);
+        _ = AssemblyHasher.Run(fileStream);
       }
     }
   }
@@ -757,7 +758,7 @@ public class BasicTests
     foreach (var sourceCode in sourceCodes)
     {
       var peBytes = myCompiler.Compile(sourceCode);
-      var currentHash = ApiSurfaceHasher.Execute(peBytes);
+      var currentHash = AssemblyHasher.Run(peBytes);
 
       if (expectedHash is null)
       {
@@ -777,7 +778,7 @@ public class BasicTests
     foreach (var sourceCode in sourceCodes)
     {
       var peBytes = myCompiler.Compile(sourceCode);
-      var surfaceHash = ApiSurfaceHasher.Execute(peBytes);
+      var surfaceHash = AssemblyHasher.Run(peBytes);
 
       if (hashes.TryGetValue(surfaceHash, out var previousCode))
       {
@@ -865,7 +866,7 @@ public class BasicTests
       """;
 
     var peBytes = myCompiler.Compile(string.Format(template, member));
-    return ApiSurfaceHasher.Execute(peBytes);
+    return AssemblyHasher.Run(peBytes);
   }
 
   #endregion

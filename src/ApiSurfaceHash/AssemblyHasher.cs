@@ -5,19 +5,16 @@ using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Runtime.CompilerServices;
-using ApiSurfaceHash;
 
-// todo: smoke test
-// todo: exported types
-// todo: record clone method
-// todo: getstring - remove all
+// todo: GetString - remove all
 // todo: typeof(T) in attribute can reference internal/private type, via string; how enum values are stored?
 // todo: SAMs tests
-// todo: explicit interface impls
+// todo: explicit interface implementations
 // todo: should internal attrs be stripped despite [InternalsVisibleTo]?
-// todo: how nested types are hashed? declared type change?
+// todo: check coverage
+// todo: test memory traffic
 
-public class ApiSurfaceHasher
+public class AssemblyHasher
 {
   private readonly MetadataReader myMetadataReader;
   private readonly SignatureHasher mySignatureHasher;
@@ -30,7 +27,7 @@ public class ApiSurfaceHasher
   private EntityHandle mySystemValueTypeClassHandle;
   private bool myInternalsAreVisible;
 
-  private ApiSurfaceHasher(MetadataReader metadataReader)
+  private AssemblyHasher(MetadataReader metadataReader)
   {
     myMetadataReader = metadataReader;
     mySignatureHasher = new SignatureHasher(this);
@@ -39,11 +36,11 @@ public class ApiSurfaceHasher
 
   #region Entry point
 
-  public static ulong Execute(PEReader peReader)
+  public static ulong Run(PEReader peReader)
   {
     var metadataReader = peReader.GetMetadataReader(MetadataReaderOptions.Default);
 
-    var surfaceHasher = new ApiSurfaceHasher(metadataReader);
+    var surfaceHasher = new AssemblyHasher(metadataReader);
 
     var assemblyDefinition = metadataReader.GetAssemblyDefinition();
     var moduleDefinition = metadataReader.GetModuleDefinition();
@@ -102,27 +99,27 @@ public class ApiSurfaceHasher
     return assemblyHash;
   }
 
-  public static unsafe ulong Execute(byte* imagePtr, int imageLength)
+  public static unsafe ulong Run(byte* imagePtr, int imageLength)
   {
     using var peReader = new PEReader(imagePtr, imageLength);
 
-    return Execute(peReader);
+    return Run(peReader);
   }
 
   [DebuggerStepThrough]
-  public static unsafe ulong Execute(Span<byte> assemblyBytes)
+  public static unsafe ulong Run(Span<byte> assemblyBytes)
   {
     fixed (byte* ptr = &assemblyBytes[0])
     {
-      return Execute(ptr, assemblyBytes.Length);
+      return Run(ptr, assemblyBytes.Length);
     }
   }
 
-  public static ulong Execute(Stream peStream)
+  public static ulong Run(Stream peStream)
   {
     using var peReader = new PEReader(peStream, PEStreamOptions.PrefetchMetadata);
 
-    return Execute(peReader);
+    return Run(peReader);
   }
 
   #endregion
@@ -752,10 +749,10 @@ public class ApiSurfaceHasher
   #region Signature hashing
 
   // todo: replace with non-allocating direct decoder
-  private class SignatureHasher(ApiSurfaceHasher surfaceHasher)
+  private class SignatureHasher(AssemblyHasher surfaceHash)
     : ISignatureTypeProvider<ulong, object?>
   {
-    protected readonly ApiSurfaceHasher SurfaceHasher = surfaceHasher;
+    protected readonly AssemblyHasher SurfaceHash = surfaceHash;
 
     ulong ISimpleTypeProvider<ulong>.GetPrimitiveType(PrimitiveTypeCode typeCode)
     {
@@ -764,12 +761,12 @@ public class ApiSurfaceHasher
 
     public virtual ulong GetTypeFromDefinition(MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind)
     {
-      return SurfaceHasher.GetOrComputeTypeUsageHash(handle);
+      return SurfaceHash.GetOrComputeTypeUsageHash(handle);
     }
 
     public ulong GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind)
     {
-      return SurfaceHasher.GetOrComputeTypeReferenceHash(handle);
+      return SurfaceHash.GetOrComputeTypeReferenceHash(handle);
     }
 
     public ulong GetGenericInstantiation(ulong genericTypeHash, ImmutableArray<ulong> typeArgumentsHashes)
@@ -888,13 +885,13 @@ public class ApiSurfaceHasher
     return myStructFieldTypeHashes[typeDefinitionHandle] = hash;
   }
 
-  private sealed class StructFieldTypesHasher(ApiSurfaceHasher surfaceHasher)
-    : SignatureHasher(surfaceHasher)
+  private sealed class StructFieldTypesHasher(AssemblyHasher surfaceHash)
+    : SignatureHasher(surfaceHash)
   {
     public override ulong GetTypeFromDefinition(
       MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind)
     {
-      return SurfaceHasher.GetOrComputeNestedStructFieldTypesHash(handle);
+      return SurfaceHash.GetOrComputeNestedStructFieldTypesHash(handle);
     }
   }
 
