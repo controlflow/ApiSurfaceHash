@@ -14,6 +14,7 @@ public class CompilationTests(RoslynCompiler compiler)
     yield return new RoslynCompiler("netcore_deterministic");
     yield return new RoslynCompiler("netcore_non_deterministic") { Deterministic = false };
     yield return new RoslynCompiler("netcore_no_optimize") { EnableOptimizations = false };
+    yield return new RoslynCompiler("netcore_reference_assembly") { EmitReferenceAssembly = true };
     yield return new RoslynCompiler("netfx35") { UseNetFramework35Target = true };
   }
 
@@ -234,9 +235,14 @@ public class CompilationTests(RoslynCompiler compiler)
       "public class C { public string ToString() => \"a\"; }",
       "public class C { public override string ToString() => \"a\"; }",
       "public class C { public sealed override string ToString() => \"a\"; }");
-    AssertMemberSurfaceNotEqual( // C# has warnings when 'await' is absent
-      "public System.Threading.Tasks.Task M() => null;",
-      "public async System.Threading.Tasks.Task M() { }");
+
+    if (!compiler.EmitReferenceAssembly) // Roslyn erases `[AsyncStateMachine]`
+    {
+      AssertMemberSurfaceNotEqual( // C# has warnings when 'await' is absent
+        "public System.Threading.Tasks.Task M() => null;",
+        "public async System.Threading.Tasks.Task M() { }");
+    }
+
     AssertMemberSurfaceEqual( // 'unsafe' is a C# thing
       "public void M() { }",
       "public unsafe void M() { int* ptr; }");

@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Emit;
 
 namespace ApiSurfaceHash.Tests;
 
@@ -12,6 +13,7 @@ public sealed class RoslynCompiler(string configName)
   public string AssemblyName { get; init; } = "Assembly42";
   public bool Deterministic { get; init; } = true;
   public bool UseNetFramework35Target { get; init; }
+  public bool EmitReferenceAssembly { get; init; }
 
   public override string ToString() => ConfigName;
 
@@ -71,7 +73,7 @@ public sealed class RoslynCompiler(string configName)
       compilationOptions);
 
     using var memoryStream = new MemoryStream();
-    var emitResult = compilation.Emit(memoryStream);
+    var emitResult = compilation.Emit(memoryStream, options: new EmitOptions(metadataOnly: EmitReferenceAssembly));
     if (!emitResult.Success)
     {
       // Handle compilation errors
