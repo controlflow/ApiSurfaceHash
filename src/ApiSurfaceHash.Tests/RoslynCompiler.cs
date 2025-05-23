@@ -4,11 +4,13 @@ using Microsoft.CodeAnalysis.CSharp;
 
 namespace ApiSurfaceHash.Tests;
 
-public sealed class RoslynCompiler
+public sealed class RoslynCompiler(string name)
 {
-  public bool EnableOptimizations { get; init; }
+  public bool EnableOptimizations { get; init; } = true;
   public string AssemblyName { get; init; } = "Assembly42";
   public bool Deterministic { get; init; } = true;
+
+  public override string ToString() => name;
 
   public Span<byte> Compile(string sourceCode)
   {
