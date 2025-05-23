@@ -11,6 +11,7 @@ public class CompilationTests(RoslynCompiler compiler)
     yield return new RoslynCompiler("this_sdk_deterministic");
     yield return new RoslynCompiler("this_sdk_non_deterministic") { Deterministic = false };
     yield return new RoslynCompiler("this_sdk_no_optimize") { EnableOptimizations = false };
+    yield return new RoslynCompiler("netfx35") { UseNetFramework35Target = true };
   }
 
   [Test]

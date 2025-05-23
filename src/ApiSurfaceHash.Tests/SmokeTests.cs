@@ -1,5 +1,4 @@
 using System.IO.Compression;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 using NUnit.Framework;
 
@@ -19,17 +18,7 @@ public class SmokeTests
       .Select(type => type.Assembly).Distinct()
       .Select(assembly => assembly.Location).ToList();
 
-    var thisAssembly = Assembly.GetExecutingAssembly();
-    var assemblyName = thisAssembly.GetName().Name;
-    var directory = new DirectoryInfo(
-      Path.GetDirectoryName(thisAssembly.Location) ?? throw new ArgumentException());
-
-    while (!directory.Name.Equals(assemblyName, StringComparison.OrdinalIgnoreCase))
-    {
-      directory = directory.Parent ?? throw new ArgumentException();
-    }
-
-    var smokeDir = Path.Combine(directory.FullName, "smoke");
+    var smokeDir = TestHelpers.GetTestPath("smoke");
     locations.AddRange(Directory.EnumerateFiles(smokeDir, "*.dll", SearchOption.AllDirectories));
     locations.AddRange(Directory.EnumerateFiles(smokeDir, "*.zip", SearchOption.AllDirectories));
 
@@ -65,5 +54,4 @@ public class SmokeTests
       }
     }
   }
-
 }

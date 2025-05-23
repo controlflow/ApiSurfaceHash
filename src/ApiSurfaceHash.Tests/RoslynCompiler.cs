@@ -9,6 +9,7 @@ public sealed class RoslynCompiler(string name)
   public bool EnableOptimizations { get; init; } = true;
   public string AssemblyName { get; init; } = "Assembly42";
   public bool Deterministic { get; init; } = true;
+  public bool UseNetFramework35Target { get; init; }
 
   public override string ToString() => name;
 
@@ -23,12 +24,21 @@ public sealed class RoslynCompiler(string name)
       allowUnsafe: true,
       nullableContextOptions: NullableContextOptions.Enable);
 
-    var metadataReferences = GetAssembliesWithTypes(
-      typeof(object),
-      typeof(DynamicAttribute),
-      typeof(Task),
-      typeof(IEnumerable<>),
-      typeof(Console));
+    List<MetadataReference> metadataReferences;
+    if (UseNetFramework35Target)
+    {
+      var root = TestHelpers.GetTestPath("libs_net35");
+      metadataReferences = [
+        MetadataReference.CreateFromFile(Path.Combine(root, "mscorlib.dll")),
+        MetadataReference.CreateFromFile(Path.Combine(root, "System.dll")),
+        MetadataReference.CreateFromFile(Path.Combine(root, "System.Core.dll"))
+      ];
+    }
+    else
+    {
+      metadataReferences = GetAssembliesWithTypes(
+        typeof(object), typeof(DynamicAttribute), typeof(Task), typeof(IEnumerable<>), typeof(Console));
+    }
 
     var compilation = CSharpCompilation.Create(
       AssemblyName, [syntaxTree], metadataReferences, compilationOptions);
