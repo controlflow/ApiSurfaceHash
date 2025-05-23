@@ -755,7 +755,9 @@ public class AssemblyHasher
 
       // System.ParamArrayAttribute
       if (nameHash == ParamArrayAttributeNameHash
-          && myMetadataReader.StringComparer.Equals(nameHandle, ParamArrayAttributeName))
+          || nameHash == ObsoleteAttributeNameHash
+          || nameHash == AttributeUsageAttributeNameHash
+          || nameHash == FlagsAttributeNameHash)
       {
         myIncludedAttributeTypes.Add(typeHandle);
       }
@@ -1191,7 +1193,6 @@ public class AssemblyHasher
   private const string SystemRuntimeCompilerServicesNamespace = "System.Runtime.CompilerServices";
 
   private const string ValueTypeClassName = nameof(ValueType);
-  private const string ParamArrayAttributeName = nameof(ParamArrayAttribute);
   private const string InternalsVisibleToAttributeName = nameof(InternalsVisibleToAttribute);
   private const string CompilerGeneratedAttributeName = nameof(CompilerGeneratedAttribute);
 
@@ -1202,6 +1203,12 @@ public class AssemblyHasher
 
   private static readonly ulong ValueTypeClassNameHash
     = LongHashCode.FromUtf8String("ValueType"u8);
+  private static readonly ulong ObsoleteAttributeNameHash
+    = LongHashCode.FromUtf8String("ObsoleteAttribute"u8);
+  private static readonly ulong AttributeUsageAttributeNameHash
+    = LongHashCode.FromUtf8String("AttributeUsageAttribute"u8);
+  private static readonly ulong FlagsAttributeNameHash
+    = LongHashCode.FromUtf8String("FlagsAttribute"u8);
   private static readonly ulong ParamArrayAttributeNameHash
     = LongHashCode.FromUtf8String("ParamArrayAttribute"u8);
   private static readonly ulong InternalsVisibleToAttributeNameHash

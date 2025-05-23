@@ -494,8 +494,6 @@ public class CompilationTests(RoslynCompiler compiler)
   [Test]
   public void TestCustomAttributes()
   {
-    
-
     AssertSurfaceEqual(
       PreserveAttrsNs +
       """
@@ -554,6 +552,17 @@ public class CompilationTests(RoslynCompiler compiler)
     AssertSurfaceNotEqual(
       PreserveAttrsNs + "[A<int>] public class A<T> : System.Attribute;",
       PreserveAttrsNs + "[A<string>] public class A<T> : System.Attribute;");
+
+    // System.* attributes
+    AssertSurfaceNotEqual(
+      "[System.Obsolete(\"AA\", error: false)] public class C;",
+      "[System.Obsolete(\"AA\", error: true)] public class C;");
+    AssertSurfaceNotEqual(
+      "[System.AttributeUsage(System.AttributeTargets.Assembly)] public class A : System.Attribute;",
+      "[System.AttributeUsage(System.AttributeTargets.Method)] public class A : System.Attribute;");
+    AssertSurfaceNotEqual(
+      "public enum E { A }",
+      "[System.Flags] public enum E { A }");
   }
 
   [Test]
