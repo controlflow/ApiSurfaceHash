@@ -24,7 +24,8 @@ public class AssemblyHasher
   // todo: split to increase locality?
   private readonly Dictionary<EntityHandle, ulong> myHashes = new();
   private readonly Dictionary<TypeDefinitionHandle, ulong> myStructFieldTypeHashes = new();
-  private readonly HashSet<EntityHandle> myIgnoredTypes = new();
+  private readonly HashSet<EntityHandle> myIgnoredAttributeTypes = [];
+  private readonly HashSet<EntityHandle> myIncludedAttributeTypes = [];
   private EntityHandle mySystemValueTypeClassHandle;
   private bool myInternalsAreVisible;
 
@@ -490,6 +491,7 @@ public class AssemblyHasher
   #region Attributes hashing
 
   // todo: not all attrs are part of the API "surface"? only special ones?
+  // todo: w
   private ulong ComputeCustomAttributesSurfaceHash(CustomAttributeHandleCollection customAttributes)
   {
     var attributeHashes = new List<ulong>();
@@ -511,8 +513,10 @@ public class AssemblyHasher
           {
             attributeOwnerTypeHash = GetOrComputeTypeUsageHash(memberParentTypeHandle);
 
-            if (myIgnoredTypes.Contains(memberParentTypeHandle))
+            if (myIgnoredAttributeTypes.Contains(memberParentTypeHandle))
               continue; // [CompilerGenerated], etc
+            if (!myIncludedAttributeTypes.Contains(memberParentTypeHandle))
+              continue;
 
             break;
           }
@@ -531,14 +535,13 @@ public class AssemblyHasher
           var methodDefinition = myMetadataReader.GetMethodDefinition((MethodDefinitionHandle)attribute.Constructor);
           var typeDefinitionHandle = methodDefinition.GetDeclaringType();
 
-          var typeDefinition = myMetadataReader.GetTypeDefinition(typeDefinitionHandle);
-          if (!IsPartOfTheApiSurface(typeDefinition))
-            continue;
-
           attributeOwnerTypeHash = GetOrComputeTypeUsageHash(typeDefinitionHandle);
 
-          if (myIgnoredTypes.Contains(typeDefinitionHandle))
+          if (myIgnoredAttributeTypes.Contains(typeDefinitionHandle))
             continue; // [CompilerGenerated], etc
+
+          if (!myIncludedAttributeTypes.Contains(typeDefinitionHandle))
+            continue;
 
           break;
         }
@@ -718,7 +721,7 @@ public class AssemblyHasher
   }
 
   private void CheckAndStoreWellKnownType(
-    ulong namespaceHash, StringHandle namespaceHandle, ulong nameHash, StringHandle nameHandle, EntityHandle handle)
+    ulong namespaceHash, StringHandle namespaceHandle, ulong nameHash, StringHandle nameHandle, EntityHandle typeHandle)
   {
     // System.Runtime.CompilerServices
     if (namespaceHash == SystemRuntimeCompilerServicesNamespaceHash
@@ -728,7 +731,11 @@ public class AssemblyHasher
       if (nameHash == CompilerGeneratedAttributeNameHash
           && myMetadataReader.StringComparer.Equals(nameHandle, CompilerGeneratedAttributeName))
       {
-        myIgnoredTypes.Add(handle);
+        myIgnoredAttributeTypes.Add(typeHandle);
+      }
+      else
+      {
+        myIncludedAttributeTypes.Add(typeHandle);
       }
     }
 
@@ -742,8 +749,15 @@ public class AssemblyHasher
       {
         if (mySystemValueTypeClassHandle.IsNil)
         {
-          mySystemValueTypeClassHandle = handle;
+          mySystemValueTypeClassHandle = typeHandle;
         }
+      }
+
+      // System.ParamArrayAttribute
+      if (nameHash == ParamArrayAttributeNameHash
+          && myMetadataReader.StringComparer.Equals(nameHandle, ParamArrayAttributeName))
+      {
+        myIncludedAttributeTypes.Add(typeHandle);
       }
     }
   }
@@ -1177,6 +1191,7 @@ public class AssemblyHasher
   private const string SystemRuntimeCompilerServicesNamespace = "System.Runtime.CompilerServices";
 
   private const string ValueTypeClassName = nameof(ValueType);
+  private const string ParamArrayAttributeName = nameof(ParamArrayAttribute);
   private const string InternalsVisibleToAttributeName = nameof(InternalsVisibleToAttribute);
   private const string CompilerGeneratedAttributeName = nameof(CompilerGeneratedAttribute);
 
@@ -1187,6 +1202,8 @@ public class AssemblyHasher
 
   private static readonly ulong ValueTypeClassNameHash
     = LongHashCode.FromUtf8String("ValueType"u8);
+  private static readonly ulong ParamArrayAttributeNameHash
+    = LongHashCode.FromUtf8String("ParamArrayAttribute"u8);
   private static readonly ulong InternalsVisibleToAttributeNameHash
     = LongHashCode.FromUtf8String("InternalsVisibleToAttribute"u8);
   private static readonly ulong CompilerGeneratedAttributeNameHash

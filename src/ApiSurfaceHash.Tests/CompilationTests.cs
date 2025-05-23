@@ -3,14 +3,17 @@ using NUnit.Framework;
 
 namespace ApiSurfaceHash.Tests;
 
+// todo: [Obsolete(error)
+// todo: NRT attrs
+
 [TestFixtureSource(typeof(CompilationTests), nameof(GetCompilationVariations))]
 public class CompilationTests(RoslynCompiler compiler)
 {
   public static IEnumerable<RoslynCompiler> GetCompilationVariations()
   {
-    yield return new RoslynCompiler("this_sdk_deterministic");
-    yield return new RoslynCompiler("this_sdk_non_deterministic") { Deterministic = false };
-    yield return new RoslynCompiler("this_sdk_no_optimize") { EnableOptimizations = false };
+    yield return new RoslynCompiler("netcore_deterministic");
+    yield return new RoslynCompiler("netcore_non_deterministic") { Deterministic = false };
+    yield return new RoslynCompiler("netcore_no_optimize") { EnableOptimizations = false };
     yield return new RoslynCompiler("netfx35") { UseNetFramework35Target = true };
   }
 
@@ -260,15 +263,20 @@ public class CompilationTests(RoslynCompiler compiler)
       "public unsafe void M(int* x) { }",
       "public unsafe void M(int** x) { }",
       "public unsafe void M(ref int x) { }");
-    AssertMemberSurfaceNotEqual(
-      "public unsafe void M(delegate*<int> ptr) { }",
-      "public unsafe void M(delegate*<uint> ptr) { }",
-      "public unsafe void M(delegate*<bool,int> ptr) { }",
-      "public unsafe void M(delegate*<uint,int> ptr) { }",
-      "public unsafe void M(delegate*<uint,uint,int> ptr) { }",
-      "public unsafe void M(delegate* unmanaged<bool> ptr) { }",
-      "public unsafe void M(delegate* unmanaged[Cdecl]<bool> ptr) { }",
-      "public unsafe void M(delegate* managed<bool> ptr) { }");
+
+    if (compiler.ConfigName != "netfx35")
+    {
+      AssertMemberSurfaceNotEqual(
+        "public unsafe void M(delegate*<int> ptr) { }",
+        "public unsafe void M(delegate*<uint> ptr) { }",
+        "public unsafe void M(delegate*<bool,int> ptr) { }",
+        "public unsafe void M(delegate*<uint,int> ptr) { }",
+        "public unsafe void M(delegate*<uint,uint,int> ptr) { }",
+        "public unsafe void M(delegate* unmanaged<bool> ptr) { }",
+        "public unsafe void M(delegate* unmanaged[Cdecl]<bool> ptr) { }",
+        "public unsafe void M(delegate* managed<bool> ptr) { }");
+    }
+
     AssertMemberSurfaceEqual(
       "public unsafe void M(delegate*<int> ptr) { }",
       "public unsafe void M(delegate* managed<int> ptr) { }");
@@ -331,6 +339,7 @@ public class CompilationTests(RoslynCompiler compiler)
       "public int A, Field;",
       "public int Field; public int A;",
       "public int A; public int Field = 1;");
+
     AssertMemberSurfaceNotEqual(
       "public int Field;",
       "public string Field;",
@@ -346,17 +355,33 @@ public class CompilationTests(RoslynCompiler compiler)
       "public readonly int Field;",
       "public volatile int Field;", // modreq
       "public static int Field;",
-      "public static readonly int Field;",
+      "public static readonly int Field;");
+
+    AssertMemberSurfaceEqual(
+      "public static int Field;",
       "[System.ThreadStatic] public static int Field;");
-    AssertSurfaceNotEqual(
-      "public ref struct S { public int RefField; }",
-      "public ref struct S { public ref int RefField; }",
-      "public ref struct S { public ref readonly int RefField; }",
-      "public ref struct S { public readonly int RefField; }",
-      "public ref struct S { public readonly ref int RefField; }",
-      "public ref struct S { public readonly ref readonly int RefField; }",
-      "public unsafe struct S { public fixed int Buf[1]; }",
-      "public unsafe struct S { public fixed int Buf[14]; }");
+
+    if (compiler.ConfigName == "netfx35") // no ref fields
+    {
+      AssertSurfaceNotEqual(
+        "public ref struct S { public int RefField; }",
+        "public ref struct S { public readonly int RefField; }",
+        "public unsafe struct S { public fixed int Buf[1]; }",
+        "public unsafe struct S { public fixed int Buf[14]; }");
+    }
+    else
+    {
+      AssertSurfaceNotEqual(
+        "public ref struct S { public int RefField; }",
+        "public ref struct S { public ref int RefField; }",
+        "public ref struct S { public ref readonly int RefField; }",
+        "public ref struct S { public readonly int RefField; }",
+        "public ref struct S { public readonly ref int RefField; }",
+        "public ref struct S { public readonly ref readonly int RefField; }",
+        "public unsafe struct S { public fixed int Buf[1]; }",
+        "public unsafe struct S { public fixed int Buf[14]; }");
+    }
+
     AssertSurfaceEqual(
       "public enum E { A, B, C }",
       "public enum E : int { A = 0, B = 1, C = 2 }");
@@ -388,6 +413,8 @@ public class CompilationTests(RoslynCompiler compiler)
       "public int this[int index] { get => 123; private protected set { } }",
       "public int this[int index] { get => 123; internal set { } }");
 
+    const string attr = PreserveAttrsNs + "public class A : System.Attribute; ";
+
     AssertMemberSurfaceNotEqual(
       "public int Property { get; }",
       "public int Property { get; set; }",
@@ -398,10 +425,10 @@ public class CompilationTests(RoslynCompiler compiler)
       "public int Property { get; protected internal init; }",
       "public required int Property { get; set; }",
       "public required int Property { get; init; }");
-    AssertMemberSurfaceNotEqual(
-      "public class A : System.Attribute; public int Property { get; }",
-      "public class A : System.Attribute; [A] public int Property { get; }",
-      "public class A : System.Attribute; public int Property { [A] get; }");
+    AssertSurfaceNotEqual(
+      attr + "public class C { public int Property { get; } }",
+      attr + "public class C { [A] public int Property { get; } }",
+      attr + "public class C { public int Property { [A] get; } }");
     AssertSurfaceNotEqual(
       """
       public class A {
@@ -438,11 +465,14 @@ public class CompilationTests(RoslynCompiler compiler)
     AssertMemberSurfaceNotEqual(
       "public event System.EventHandler Event;",
       "public event System.EventHandler? Event;",
-      "public event System.Action Event;",
-      "public class A : System.Attribute; public event System.EventHandler Event;",
-      "public class A : System.Attribute; [A] public event System.EventHandler Event;",
-      "public class A : System.Attribute; public event System.EventHandler Event { [A] add { } remove { } }",
-      "public class A : System.Attribute; public event System.EventHandler Event { add { } [A] remove { } }");
+      "public event System.Action Event;");
+
+    const string attr = PreserveAttrsNs + "public class A : System.Attribute; ";
+    AssertSurfaceNotEqual(
+      attr + "public class C { public event System.EventHandler Event; }",
+      attr + "public class C { [A] public event System.EventHandler Event; }",
+      attr + "public class C { public event System.EventHandler Event { [A] add { } remove { } } }",
+      attr + "public class C { public event System.EventHandler Event { add { } [A] remove { } } }");
   }
 
   [Test]
@@ -458,12 +488,16 @@ public class CompilationTests(RoslynCompiler compiler)
   [Test]
   public void TestCustomAttributes()
   {
+    
+
     AssertSurfaceEqual(
+      PreserveAttrsNs +
       """
       internal class A(int x) : System.Attribute;
       internal class B(int x) : System.Attribute;
       [A(1), B(2)] public class C;
       """,
+      PreserveAttrsNs +
       """
       internal class A(int x) : System.Attribute;
       internal class B(int x) : System.Attribute;
@@ -471,25 +505,30 @@ public class CompilationTests(RoslynCompiler compiler)
       """);
 
     AssertSurfaceNotEqual(
+      PreserveAttrsNs +
       """
       public class A(int x) : System.Attribute;
       [A(1)] public class C;
       """,
+      PreserveAttrsNs +
       """
       public class A(int x) : System.Attribute;
       [A(2)] public class C;
       """);
-    AssertSurfaceEqual(
+    AssertSurfaceNotEqual( // even internal attrs from ns are preserved (embedded C# attrs are `internal`)
+      PreserveAttrsNs +
       """
       internal class A(int x) : System.Attribute;
       [A(1)] public class C;
       """,
+      PreserveAttrsNs +
       """
       internal class A(int x) : System.Attribute;
       [A(2)] public class C;
       """);
 
     AssertSurfaceNotEqual(
+      PreserveAttrsNs +
       """
       [A((int)42)]
       public class A : System.Attribute {
@@ -497,6 +536,7 @@ public class CompilationTests(RoslynCompiler compiler)
         public A(uint x) { }
       }
       """,
+      PreserveAttrsNs +
       """
       [A((uint)42)]
       public class A : System.Attribute {
@@ -506,8 +546,8 @@ public class CompilationTests(RoslynCompiler compiler)
       """);
 
     AssertSurfaceNotEqual(
-      "[A<int>] public class A<T> : System.Attribute;",
-      "[A<string>] public class A<T> : System.Attribute;");
+      PreserveAttrsNs + "[A<int>] public class A<T> : System.Attribute;",
+      PreserveAttrsNs + "[A<string>] public class A<T> : System.Attribute;");
   }
 
   [Test]
@@ -616,10 +656,12 @@ public class CompilationTests(RoslynCompiler compiler)
       public class L<T> : System.Collections.Generic.List<T[]>;
       """);
     AssertSurfaceNotEqual(
+      PreserveAttrsNs +
       """
       public class A : System.Attribute;
       public class C<T>;
       """,
+      PreserveAttrsNs +
       """
       public class A : System.Attribute;
       public class C<[A] T>;
@@ -649,11 +691,11 @@ public class CompilationTests(RoslynCompiler compiler)
     AssertSurfaceEqual("public class C<T, U>;", "public class C<U, T>;");
     AssertMemberSurfaceEqual("public void M<T>(T x) { }", "public void M<U>(U x) { }");
     AssertSurfaceNotEqual( // attrs on type parameters
-      "public class A<T> : System.Attribute;",
-      "public class A<[A<int>] T> : System.Attribute;");
-    AssertMemberSurfaceNotEqual(
-      "public void M<T>() { } public class A : System.Attribute;",
-      "public void M<[A] T>() { } public class A : System.Attribute;");
+      PreserveAttrsNs + "public class A<T> : System.Attribute;",
+      PreserveAttrsNs + "public class A<[A<int>] T> : System.Attribute;");
+    AssertSurfaceNotEqual(
+      PreserveAttrsNs + "public class A : System.Attribute; public class C { public void M<T>() { } }",
+      PreserveAttrsNs + "public class A : System.Attribute; public class C { public void M<[A] T>() { } }");
 
     AssertMemberSurfaceNotEqual(
       "public void M<T>() { }",
@@ -722,6 +764,7 @@ public class CompilationTests(RoslynCompiler compiler)
       """);
   }
 
+  private const string PreserveAttrsNs = "namespace System.Runtime.CompilerServices; // preserve attrs\n";
 
   #region Assertion API
 
