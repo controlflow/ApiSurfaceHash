@@ -731,6 +731,7 @@ public class AssemblyHasher
       if (nameHash == CompilerGeneratedAttributeNameHash
           && myMetadataReader.StringComparer.Equals(nameHandle, CompilerGeneratedAttributeName))
       {
+        // todo: any other excluded?
         myIgnoredAttributeTypes.Add(typeHandle);
       }
       else
@@ -740,7 +741,7 @@ public class AssemblyHasher
     }
 
     // System
-    if (namespaceHash == SystemNamespaceHash
+    else if (namespaceHash == SystemNamespaceHash
         && myMetadataReader.StringComparer.Equals(namespaceHandle, SystemNamespace))
     {
       // ValueType
@@ -761,6 +762,13 @@ public class AssemblyHasher
       {
         myIncludedAttributeTypes.Add(typeHandle);
       }
+    }
+
+    // System.Diagnostics.CodeAnalysis
+    else if (namespaceHash == SystemDiagnosticsCodeAnalysisNamespaceHash
+             && myMetadataReader.StringComparer.Equals(namespaceHandle, SystemDiagnosticsCodeAnalysisNamespace))
+    {
+      myIncludedAttributeTypes.Add(typeHandle);
     }
   }
 
@@ -1191,6 +1199,7 @@ public class AssemblyHasher
 
   private const string SystemNamespace = "System";
   private const string SystemRuntimeCompilerServicesNamespace = "System.Runtime.CompilerServices";
+  private const string SystemDiagnosticsCodeAnalysisNamespace = "System.Diagnostics.CodeAnalysis";
 
   private const string ValueTypeClassName = nameof(ValueType);
   private const string InternalsVisibleToAttributeName = nameof(InternalsVisibleToAttribute);
@@ -1200,6 +1209,8 @@ public class AssemblyHasher
     = LongHashCode.FromUtf8String("System"u8);
   private static readonly ulong SystemRuntimeCompilerServicesNamespaceHash
     = LongHashCode.FromUtf8String("System.Runtime.CompilerServices"u8);
+  private static readonly ulong SystemDiagnosticsCodeAnalysisNamespaceHash
+    = LongHashCode.FromUtf8String("System.Diagnostics.CodeAnalysis"u8);
 
   private static readonly ulong ValueTypeClassNameHash
     = LongHashCode.FromUtf8String("ValueType"u8);

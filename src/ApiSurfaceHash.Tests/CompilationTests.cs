@@ -3,9 +3,6 @@ using NUnit.Framework;
 
 namespace ApiSurfaceHash.Tests;
 
-// todo: [Obsolete(error)
-// todo: NRT attrs
-
 [TestFixtureSource(typeof(CompilationTests), nameof(GetCompilationVariations))]
 public class CompilationTests(RoslynCompiler compiler)
 {
@@ -563,6 +560,14 @@ public class CompilationTests(RoslynCompiler compiler)
     AssertSurfaceNotEqual(
       "public enum E { A }",
       "[System.Flags] public enum E { A }");
+
+    // NRT attributes
+    if (!compiler.UseNetFramework35Target)
+    {
+      AssertMemberSurfaceNotEqual(
+        "public void M(ref string? x) { }",
+        "public void M([System.Diagnostics.CodeAnalysis.DisallowNull] ref string? x) { }");
+    }
   }
 
   [Test]
