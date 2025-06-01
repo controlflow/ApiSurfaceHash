@@ -105,4 +105,11 @@ internal static class LongHashCode
   {
     return unchecked((((a * FnvPrime ^ b) * FnvPrime ^ c) * FnvPrime ^ d) * FnvPrime ^ e);
   }
+
+  [Pure]
+  public static ulong FromVersion(Version version)
+  {
+    return Combine(
+      (ulong)version.Major, (ulong)version.Minor, (ulong)version.Revision, (ulong)version.Build);
+  }
 }

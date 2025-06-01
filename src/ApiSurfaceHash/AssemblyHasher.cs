@@ -7,13 +7,14 @@ using System.Reflection.PortableExecutable;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 
-// todo: GetString - remove all
 // todo: typeof(T) in attribute can reference internal/private type, via string; how enum values are stored?
 // todo: SAMs tests
 // todo: explicit interface implementations
 // todo: should internal attrs be stripped despite [InternalsVisibleTo]?
 // todo: check coverage
 // todo: test memory traffic
+// todo: include all attrs mode for roslyn analyzers
+// todo: explicit NRT context
 
 public class AssemblyHasher
 {
@@ -47,22 +48,22 @@ public class AssemblyHasher
     var assemblyDefinition = metadataReader.GetAssemblyDefinition();
     var moduleDefinition = metadataReader.GetModuleDefinition();
 
+    // 0. check assembly definition
+    var assemblyDefinitionHash = surfaceHasher.ComputeAssemblyDefinitionHash(assemblyDefinition);
+
     // 1. check [assembly: InternalsVisibleTo] presence
-    surfaceHasher.CheckHasInternalsVisibleTo(assemblyDefinition);
+    surfaceHasher.CheckIfInternalsAreExposed(assemblyDefinition);
 
     // 2. hash assembly and module attributes
     var assemblyCustomAttributesSurfaceHash = surfaceHasher.ComputeCustomAttributesSurfaceHash(assemblyDefinition.GetCustomAttributes());
     var moduleCustomAttributesSurfaceHash = surfaceHasher.ComputeCustomAttributesSurfaceHash(moduleDefinition.GetCustomAttributes());
 
     // 3. hash surface types
-    var typeHashes = new List<ulong>();
+    using var typeHashes = new SortedHashesSet();
 
     foreach (var typeDefinitionHandle in metadataReader.TypeDefinitions)
     {
       var typeDefinition = metadataReader.GetTypeDefinition(typeDefinitionHandle);
-
-      //var ns = metadataReader.GetString(typeDefinition.Namespace);
-      //var fqn = (ns.Length == 0 ? "" : ns + ".") + metadataReader.GetString(typeDefinition.Name);
 
       if (surfaceHasher.IsPartOfTheApiSurface(typeDefinition))
       {
@@ -92,12 +93,11 @@ public class AssemblyHasher
       }
     }
 
-    typeHashes.Sort();
-
     var assemblyHash = LongHashCode.Combine(
+      assemblyDefinitionHash,
       assemblyCustomAttributesSurfaceHash,
       moduleCustomAttributesSurfaceHash,
-      LongHashCode.Combine(typeHashes));
+      typeHashes.CombineAll());
 
     return assemblyHash;
   }
@@ -129,6 +129,22 @@ public class AssemblyHasher
   #endregion
   #region Definitions hashing
 
+  [Pure]
+  private ulong ComputeAssemblyDefinitionHash(AssemblyDefinition assemblyDefinition)
+  {
+    var assemblyNameHash = GetOrComputeStringHash(assemblyDefinition.Name);
+
+    // note: do not include assembly version, like old R#'s surface hasher
+    // var assemblyVersionHash = LongHashCode.FromVersion(assemblyDefinition.Version);
+
+    var assemblyCultureHash = GetOrComputeStringHash(assemblyDefinition.Culture);
+    var assemblyPublicKeyHash = LongHashCode.FromBlob(myMetadataReader.GetBlobReader(assemblyDefinition.PublicKey));
+
+    //todo: assemblyDefinition.HashAlgorithm?
+
+    return LongHashCode.Combine(assemblyNameHash, assemblyCultureHash, assemblyPublicKeyHash);
+  }
+
   private const TypeAttributes TypeApiSurfaceAttributes =
     TypeAttributes.Abstract
     | TypeAttributes.Sealed
@@ -152,7 +168,7 @@ public class AssemblyHasher
     var typeContainingTypeUsageHash = !typeContainingTypeHandle.IsNil
       ? GetOrComputeTypeUsageHash(typeContainingTypeHandle) : 0UL;
 
-    var typeMemberHashes = new List<ulong>();
+    using var typeMemberHashes = new SortedHashesSet();
     var apiSurfaceMethods = new HashSet<MethodDefinitionHandle>();
 
     HashFieldDefinitions();
@@ -160,20 +176,18 @@ public class AssemblyHasher
     HashPropertyDefinitions();
     HashEventDefinitions();
 
-    typeMemberHashes.Sort();
-
     var typeCustomAttributesHash = ComputeCustomAttributesSurfaceHash(typeDefinition.GetCustomAttributes());
 
     var typeHeaderHash = LongHashCode.Combine(
       typeAttributesHash, typeNamespaceHash, typeNameHash, typeTypeParametersHash, typeSuperTypesHash);
-    var typeMembersHash = LongHashCode.Combine(typeMemberHashes);
+    var typeMembersHash = typeMemberHashes.CombineAll();
 
     return LongHashCode.Combine(typeHeaderHash, typeContainingTypeUsageHash, typeCustomAttributesHash, typeMembersHash);
 
     ulong GetSuperTypesHash(out bool baseClassIsSystemValueType)
     {
       var typeBaseTypeHash = 0UL;
-      var typeImplementedInterfaceHashes = new List<ulong>();
+      using var typeImplementedInterfaceHashes = new SortedHashesSet();
       baseClassIsSystemValueType = false;
 
       var baseTypeHandle = typeDefinition.BaseType;
@@ -188,10 +202,10 @@ public class AssemblyHasher
         var interfaceImplementation = myMetadataReader.GetInterfaceImplementation(interfaceImplementationHandle);
 
         // skip internal interface implementations
-        var topLevelTypeDefinitionHandle = TryGetTopLevelTypeDefinition(interfaceImplementation.Interface);
-        if (!topLevelTypeDefinitionHandle.IsNil)
+        var topLevelTypeDefinitionHandle = TryGetTopLevelTypeHandleFromPossibleGeneric(interfaceImplementation.Interface);
+        if (topLevelTypeDefinitionHandle is { IsNil: false, Kind: HandleKind.TypeDefinition })
         {
-          var topLevelTypeDefinition = myMetadataReader.GetTypeDefinition(topLevelTypeDefinitionHandle);
+          var topLevelTypeDefinition = myMetadataReader.GetTypeDefinition((TypeDefinitionHandle)topLevelTypeDefinitionHandle);
           if (!IsPartOfTheApiSurface(topLevelTypeDefinition))
             continue;
         }
@@ -203,9 +217,7 @@ public class AssemblyHasher
           interfaceImplementationHash, interfaceImplementationCustomAttributesHash));
       }
 
-      typeImplementedInterfaceHashes.Sort();
-
-      return LongHashCode.Combine(typeBaseTypeHash, LongHashCode.Combine(typeImplementedInterfaceHashes));
+      return LongHashCode.Combine(typeBaseTypeHash, typeImplementedInterfaceHashes.CombineAll());
     }
 
     void HashFieldDefinitions()
@@ -287,47 +299,46 @@ public class AssemblyHasher
         }
       }
     }
+  }
 
-    [Pure]
-    TypeDefinitionHandle TryGetTopLevelTypeDefinition(EntityHandle entityHandle)
+  [Pure]
+  private EntityHandle TryGetTopLevelTypeHandleFromPossibleGeneric(EntityHandle entityHandle)
+  {
+    switch (entityHandle.Kind)
     {
-      switch (entityHandle.Kind)
+      case HandleKind.TypeDefinition: // : I
       {
-        case HandleKind.TypeDefinition: // : I
-        {
-          return (TypeDefinitionHandle)entityHandle;
-        }
-
-        case HandleKind.TypeSpecification: // : I<X>
-        {
-          var interfaceTypeSpecification = myMetadataReader.GetTypeSpecification((TypeSpecificationHandle)entityHandle);
-          var signatureBlobReader = myMetadataReader.GetBlobReader(interfaceTypeSpecification.Signature);
-
-          var typeCode = (SignatureTypeCode)signatureBlobReader.ReadCompressedInteger();
-          if (typeCode != SignatureTypeCode.GenericTypeInstance) break;
-
-          var genericTypeCode = (SignatureTypeKind)signatureBlobReader.ReadCompressedInteger();
-          if (genericTypeCode != SignatureTypeKind.Class) break;
-
-          var typeHandle = signatureBlobReader.ReadTypeHandle();
-          if (typeHandle is { IsNil: false, Kind: HandleKind.TypeDefinition })
-          {
-            return (TypeDefinitionHandle)typeHandle;
-          }
-
-          break;
-        }
+        return (TypeDefinitionHandle)entityHandle;
       }
 
-      return default;
+      case HandleKind.TypeSpecification: // : I<X>
+      {
+        // light parse of the signature blob
+        var interfaceTypeSpecification = myMetadataReader.GetTypeSpecification((TypeSpecificationHandle)entityHandle);
+        var signatureBlobReader = myMetadataReader.GetBlobReader(interfaceTypeSpecification.Signature);
+
+        var typeCode = (SignatureTypeCode)signatureBlobReader.ReadCompressedInteger();
+        if (typeCode != SignatureTypeCode.GenericTypeInstance) break;
+
+        var genericTypeCode = (SignatureTypeKind)signatureBlobReader.ReadCompressedInteger();
+        if (genericTypeCode != SignatureTypeKind.Class) break;
+
+        var typeHandle = signatureBlobReader.ReadTypeHandle();
+        if (typeHandle is { IsNil: false, Kind: HandleKind.TypeDefinition or HandleKind.TypeReference })
+        {
+          return typeHandle;
+        }
+
+        break;
+      }
     }
+
+    return default;
   }
 
   [Pure]
   private ulong ComputeFieldDefinitionSurfaceHash(FieldDefinition fieldDefinition)
   {
-    //var fieldName = myMetadataReader.GetString(fieldDefinition.Name);
-
     const FieldAttributes apiSurfaceAttributes =
       FieldAttributes.FieldAccessMask
       | FieldAttributes.Static
@@ -352,8 +363,6 @@ public class AssemblyHasher
   [Pure]
   private ulong ComputeMethodDefinitionSurfaceHash(MethodDefinition methodDefinition)
   {
-    //var methodName = myMetadataReader.GetString(methodDefinition.Name);
-
     const MethodAttributes apiSurfaceAttributes =
       MethodAttributes.MemberAccessMask
       | MethodAttributes.Static
@@ -411,9 +420,6 @@ public class AssemblyHasher
   {
     var typeAttributesHash = (ulong)(exportedType.Attributes & TypeApiSurfaceAttributes);
 
-    // var s1 = myMetadataReader.GetString(exportedType.Name);
-    // var s2 = myMetadataReader.GetString(exportedType.NamespaceDefinition);
-
     var typeNameHash = GetOrComputeStringHash(exportedType.Name);
     var typeNamespaceHash = GetOrComputeStringHash(exportedType.Namespace);
     var typeCustomAttributesHash = ComputeCustomAttributesSurfaceHash(exportedType.GetCustomAttributes());
@@ -449,8 +455,8 @@ public class AssemblyHasher
   [Pure]
   private ulong GetTypeParametersSurfaceHash(GenericParameterHandleCollection typeParameters)
   {
-    var typeParameterHashes = new List<ulong>();
-    var typeParameterTypeConstraintsHashes = new List<ulong>();
+    using var typeParameterHashes = new SortedHashesSet();
+    using var typeParameterTypeConstraintsHashes = new SortedHashesSet();
 
     foreach (var typeParameterHandle in typeParameters)
     {
@@ -473,28 +479,24 @@ public class AssemblyHasher
           typeConstraintTypeUsageHash, typeConstraintCustomAttributesHash));
       }
 
-      typeParameterTypeConstraintsHashes.Sort();
-
-      var typeParameterTypeConstraintsHash = LongHashCode.Combine(typeParameterTypeConstraintsHashes);
+      var typeParameterTypeConstraintsHash = typeParameterTypeConstraintsHashes.CombineAll();
       var typeParameterCustomAttributesHash = ComputeCustomAttributesSurfaceHash(typeParameter.GetCustomAttributes());
 
       typeParameterHashes.Add(LongHashCode.Combine(
         typeParameterIndexHash, typeParameterAttributesHash, typeParameterTypeConstraintsHash, typeParameterCustomAttributesHash));
     }
 
-    typeParameterHashes.Sort();
-
-    return LongHashCode.Combine(typeParameterHashes);
+    return typeParameterHashes.CombineAll();
   }
 
   #endregion
   #region Attributes hashing
 
   // todo: not all attrs are part of the API "surface"? only special ones?
-  // todo: w
+  // todo: assembly attrs
   private ulong ComputeCustomAttributesSurfaceHash(CustomAttributeHandleCollection customAttributes)
   {
-    var attributeHashes = new List<ulong>();
+    using var attributeHashes = new SortedHashesSet();
 
     foreach (var customAttributeHandle in customAttributes)
     {
@@ -513,9 +515,7 @@ public class AssemblyHasher
           {
             attributeOwnerTypeHash = GetOrComputeTypeUsageHash(memberParentTypeHandle);
 
-            if (myIgnoredAttributeTypes.Contains(memberParentTypeHandle))
-              continue; // [CompilerGenerated], etc
-            if (!myIncludedAttributeTypes.Contains(memberParentTypeHandle))
+            if (!IsIncluded(memberParentTypeHandle))
               continue;
 
             break;
@@ -524,6 +524,14 @@ public class AssemblyHasher
           if (memberParentTypeHandle.Kind == HandleKind.TypeSpecification) // generic attributes
           {
             attributeOwnerTypeHash = GetOrComputeTypeUsageHash(memberParentTypeHandle);
+
+            var topLevelTypeHandle = TryGetTopLevelTypeHandleFromPossibleGeneric(memberParentTypeHandle);
+            if (topLevelTypeHandle.IsNil)
+              continue;
+
+            if (!IsIncluded(topLevelTypeHandle))
+              continue;
+
             break;
           }
 
@@ -537,10 +545,7 @@ public class AssemblyHasher
 
           attributeOwnerTypeHash = GetOrComputeTypeUsageHash(typeDefinitionHandle);
 
-          if (myIgnoredAttributeTypes.Contains(typeDefinitionHandle))
-            continue; // [CompilerGenerated], etc
-
-          if (!myIncludedAttributeTypes.Contains(typeDefinitionHandle))
+          if (!IsIncluded(typeDefinitionHandle))
             continue;
 
           break;
@@ -558,11 +563,21 @@ public class AssemblyHasher
 
       attributeHashes.Add(LongHashCode.Combine(
         attributeConstructorUsageHash, attributeOwnerTypeHash, attributeBlobHash));
+      continue;
+
+      bool IsIncluded(EntityHandle entityHandle)
+      {
+        if (myIgnoredAttributeTypes.Contains(entityHandle))
+          return false; // [CompilerGenerated], etc
+
+        if (myIncludedAttributeTypes.Contains(entityHandle))
+          return true;
+
+        return false;
+      }
     }
 
-    attributeHashes.Sort();
-
-    return LongHashCode.Combine(attributeHashes);
+    return attributeHashes.CombineAll();
   }
 
   #endregion
@@ -573,9 +588,6 @@ public class AssemblyHasher
     if (myHashes.TryGetValue(handle, out var hash)) return hash;
 
     var typeReference = myMetadataReader.GetTypeReference(handle);
-
-    //var ns = myMetadataReader.GetString(typeReference.Namespace);
-    //var fqn = (ns.Length == 0 ? "" : ns + ".") + myMetadataReader.GetString(typeReference.Name);
 
     var namespaceHash = GetOrComputeStringHash(typeReference.Namespace);
     var nameHash = GetOrComputeStringHash(typeReference.Name);
@@ -891,7 +903,7 @@ public class AssemblyHasher
       // in mscorlib `System.Int32` has a field of type `System.Int32`, avoid SO
       myStructFieldTypeHashes[typeDefinitionHandle] = LongHashCode.FnvOffset;
 
-      var fieldHashes = new List<ulong>();
+      using var fieldHashes = new SortedHashesSet();
 
       foreach (var fieldDefinitionHandle in typeDefinition.GetFields())
       {
@@ -903,9 +915,7 @@ public class AssemblyHasher
         }
       }
 
-      fieldHashes.Sort();
-
-      hash = LongHashCode.Combine(fieldHashes);
+      hash = fieldHashes.CombineAll();
     }
     else
     {
@@ -989,9 +999,7 @@ public class AssemblyHasher
 
     // System.Private.CoreLib, Version=9.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e
     var assemblyNameHash = GetOrComputeStringHash(assemblyReference.Name);
-    var assemblyVersion = assemblyReference.Version;
-    var assemblyVersionHash = LongHashCode.Combine(
-      (ulong)assemblyVersion.Major, (ulong)assemblyVersion.Minor, (ulong)assemblyVersion.Revision, (ulong)assemblyVersion.Build);
+    var assemblyVersionHash = LongHashCode.FromVersion(assemblyReference.Version);
     var assemblyCultureHash = GetOrComputeStringHash(assemblyReference.Culture);
     var assemblyPublicKeyHash = LongHashCode.FromBlob(
       myMetadataReader.GetBlobReader(assemblyReference.PublicKeyOrToken));
@@ -1146,50 +1154,25 @@ public class AssemblyHasher
     return false;
   }
 
-  // todo: can we make it nicer?
-  private void CheckHasInternalsVisibleTo(AssemblyDefinition assemblyDefinition)
+  private void CheckIfInternalsAreExposed(AssemblyDefinition assemblyDefinition)
   {
     foreach (var customAttributeHandle in assemblyDefinition.GetCustomAttributes())
     {
       var customAttribute = myMetadataReader.GetCustomAttribute(customAttributeHandle);
+      if (customAttribute.Constructor.Kind != HandleKind.MemberReference) continue;
 
-      switch (customAttribute.Constructor.Kind)
+      var memberReference = myMetadataReader.GetMemberReference((MemberReferenceHandle)customAttribute.Constructor);
+      if (memberReference.Parent.Kind != HandleKind.TypeReference) continue;
+
+      var typeReference = myMetadataReader.GetTypeReference((TypeReferenceHandle)memberReference.Parent);
+
+      var nameHash = GetOrComputeStringHash(typeReference.Name);
+      if (nameHash == InternalsVisibleToAttributeNameHash
+          && GetOrComputeStringHash(typeReference.Namespace) == SystemRuntimeCompilerServicesNamespaceHash
+          && myMetadataReader.StringComparer.Equals(typeReference.Name, InternalsVisibleToAttributeName)
+          && myMetadataReader.StringComparer.Equals(typeReference.Namespace, SystemRuntimeCompilerServicesNamespace))
       {
-        case HandleKind.MemberReference:
-        {
-          var memberReference = myMetadataReader.GetMemberReference((MemberReferenceHandle)customAttribute.Constructor);
-          if (memberReference.Parent.Kind != HandleKind.TypeReference) continue;
-
-          var typeReference = myMetadataReader.GetTypeReference((TypeReferenceHandle)memberReference.Parent);
-
-          if (GetOrComputeStringHash(typeReference.Name) == InternalsVisibleToAttributeNameHash
-              && GetOrComputeStringHash(typeReference.Namespace) == SystemRuntimeCompilerServicesNamespaceHash
-              && myMetadataReader.StringComparer.Equals(typeReference.Name, InternalsVisibleToAttributeName)
-              && myMetadataReader.StringComparer.Equals(typeReference.Namespace, SystemRuntimeCompilerServicesNamespace))
-          {
-            myInternalsAreVisible = true;
-            return;
-          }
-
-          break;
-        }
-
-        case HandleKind.MethodDefinition:
-        {
-          var methodDefinition = myMetadataReader.GetMethodDefinition((MethodDefinitionHandle)customAttribute.Constructor);
-          var typeDefinition = myMetadataReader.GetTypeDefinition(methodDefinition.GetDeclaringType());
-
-          if (GetOrComputeStringHash(typeDefinition.Name) == InternalsVisibleToAttributeNameHash
-              && GetOrComputeStringHash(typeDefinition.Namespace) == SystemRuntimeCompilerServicesNamespaceHash
-              && myMetadataReader.StringComparer.Equals(typeDefinition.Name, InternalsVisibleToAttributeName)
-              && myMetadataReader.StringComparer.Equals(typeDefinition.Namespace, SystemRuntimeCompilerServicesNamespace))
-          {
-            myInternalsAreVisible = true;
-            return;
-          }
-
-          break;
-        }
+        myInternalsAreVisible = true;
       }
     }
   }
@@ -1230,4 +1213,37 @@ public class AssemblyHasher
     = LongHashCode.FromUtf8String(".ctor"u8);
 
   #endregion
+}
+
+/// Thin abstraction to make list poolable
+file readonly struct SortedHashesSet : IDisposable
+{
+  private readonly List<ulong> myHashes;
+
+  // ReSharper disable once ConvertToPrimaryConstructor
+  public SortedHashesSet()
+  {
+    myHashes = new List<ulong>();
+  }
+
+  public void Dispose()
+  {
+    // can return to pool here
+  }
+
+  public void Add(ulong hash)
+  {
+    myHashes.Add(hash);
+  }
+
+  public void Clear()
+  {
+    myHashes.Clear();
+  }
+
+  public ulong CombineAll()
+  {
+    myHashes.Sort();
+    return LongHashCode.Combine(myHashes);
+  }
 }

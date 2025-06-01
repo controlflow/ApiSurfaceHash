@@ -571,6 +571,31 @@ public class CompilationTests(RoslynCompiler compiler)
   }
 
   [Test]
+  public void TestAssemblyDefinition()
+  {
+    AssertSurfaceEqual(
+      "[assembly: System.Reflection.AssemblyTitle(\"A\")]",
+      "[assembly: System.Reflection.AssemblyTitle(\"B\")]");
+
+    // own assembly version is not hashed
+    AssertSurfaceEqual(
+      "[assembly: System.Reflection.AssemblyVersionAttribute(\"7.0.0.0\")]",
+      "[assembly: System.Reflection.AssemblyVersionAttribute(\"8.0.0.0\")]");
+
+    if (!compiler.Deterministic) // * in assembly version
+    {
+      const string starVersion = "[assembly: System.Reflection.AssemblyVersionAttribute(\"1.2.3.*\")]";
+
+      var hash1 = AssemblyHasher.Run(compiler.Compile(starVersion));
+
+      Thread.Sleep(2100); // see https://sourceroslyn.io/#Microsoft.CodeAnalysis/VersionHelper.cs,185
+
+      var hash2 = AssemblyHasher.Run(compiler.Compile(starVersion));
+      Assert.That(hash1, Is.EqualTo(hash2));
+    }
+  }
+
+  [Test]
   public void TestPseudoAttributes()
   {
     AssertSurfaceEqual(
