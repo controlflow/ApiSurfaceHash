@@ -17,10 +17,10 @@ public class AssemblyHasher
 {
   private readonly MetadataReader myMetadataReader;
   private readonly AssemblyHasherOptions myHasherOptions;
-  private readonly SignatureHasher mySignatureHasher;
-  private readonly SignatureHasher2 mySignatureHasher2;
-  private readonly StructFieldTypesHasher myStructFieldTypesHasher;
-  private readonly StructFieldTypesHasher2 myStructFieldTypesHasher2;
+  [Obsolete]
+  private readonly SignatureHasherOld mySignatureHasher;
+  private SignatureHasher<TypeUsageHashProvider> myTypeUsageHasher;
+  private SignatureHasher<StructFieldTypeUsageHashProvider> myStructFieldTypeUsageHasher;
   private readonly Dictionary<StringHandle, ulong> myStringHashes = new();
   // todo: split to increase locality?
   private readonly Dictionary<EntityHandle, ulong> myHashes = new();
@@ -33,10 +33,11 @@ public class AssemblyHasher
   private AssemblyHasher(MetadataReader metadataReader, AssemblyHasherOptions options)
   {
     myMetadataReader = metadataReader;
-    mySignatureHasher = new SignatureHasher(this);
-    mySignatureHasher2 = new SignatureHasher2(this);
-    myStructFieldTypesHasher = new StructFieldTypesHasher(this);
-    myStructFieldTypesHasher2 = new StructFieldTypesHasher2(this);
+    mySignatureHasher = new SignatureHasherOld(this);
+    myTypeUsageHasher = new SignatureHasher<TypeUsageHashProvider>(
+      new TypeUsageHashProvider(this), metadataReader);
+    myStructFieldTypeUsageHasher = new SignatureHasher<StructFieldTypeUsageHashProvider>(
+      new StructFieldTypeUsageHashProvider(this), metadataReader);
     myHasherOptions = options;
   }
 
@@ -171,7 +172,8 @@ public class AssemblyHasher
     // nested types hash must include a reference to it's containing type
     var typeContainingTypeHandle = typeDefinition.GetDeclaringType();
     var typeContainingTypeUsageHash = !typeContainingTypeHandle.IsNil
-      ? GetOrComputeTypeUsageHash(typeContainingTypeHandle) : 0UL;
+      ? GetOrComputeTypeUsageHash(typeContainingTypeHandle)
+      : 0UL;
 
     using var typeMemberHashes = new SortedHashesSet();
     var apiSurfaceMethods = new HashSet<MethodDefinitionHandle>();
@@ -355,17 +357,9 @@ public class AssemblyHasher
     var fieldAttributesHash = (ulong)fieldAttributes;
 
     var fieldNameHash = GetOrComputeStringHash(fieldDefinition.Name);
-    var fieldTypeHash = fieldDefinition.DecodeSignature(mySignatureHasher, genericContext: null);
-
-    var signatureHasher = new SignatureHasher<SignatureHasher2>(mySignatureHasher2, myMetadataReader);
-    var fieldSignatureBlobReader = myMetadataReader.GetBlobReader(fieldDefinition.Signature);
-
-    var fieldTypeHash2 = signatureHasher.DecodeFieldSignature(ref fieldSignatureBlobReader);
-    if (fieldTypeHash2 != fieldTypeHash)
-      throw new InvalidOperationException();
+    var fieldTypeHash = myTypeUsageHasher.DecodeFieldSignature(fieldDefinition.Signature);
 
     var fieldConstantValueHash = GetOrComputeConstantValueHash(fieldDefinition.GetDefaultValue());
-
     var fieldCustomAttributesHash = ComputeCustomAttributesSurfaceHash(fieldDefinition.GetCustomAttributes());
 
     var fieldSignatureHash = LongHashCode.Combine(fieldNameHash, fieldTypeHash, fieldConstantValueHash);
@@ -805,7 +799,7 @@ public class AssemblyHasher
   #endregion
   #region Signature hashing
 
-  private readonly struct SignatureHasher2(AssemblyHasher assemblyHasher) : ISignatureHashProvider
+  private readonly struct TypeUsageHashProvider(AssemblyHasher assemblyHasher) : ITypeUsageHashProvider
   {
     public ulong HashTypeDefinition(TypeDefinitionHandle handle, byte rawTypeKind)
     {
@@ -818,8 +812,8 @@ public class AssemblyHasher
     }
   }
 
-  // todo: replace with non-allocating direct decoder
-  private class SignatureHasher(AssemblyHasher surfaceHash)
+  [Obsolete("To be removed")]
+  private class SignatureHasherOld(AssemblyHasher surfaceHash)
     : ISignatureTypeProvider<ulong, object?>
   {
     protected readonly AssemblyHasher SurfaceHash = surfaceHash;
@@ -912,7 +906,7 @@ public class AssemblyHasher
 
   private ulong GetOrComputeStructFieldTypeHash(FieldDefinition fieldDefinition)
   {
-    return fieldDefinition.DecodeSignature(myStructFieldTypesHasher, genericContext: null);
+    return myStructFieldTypeUsageHasher.DecodeFieldSignature(fieldDefinition.Signature);
   }
 
   private ulong GetOrComputeNestedStructFieldTypesHash(TypeDefinitionHandle typeDefinitionHandle)
@@ -957,7 +951,7 @@ public class AssemblyHasher
     return myStructFieldTypeHashes[typeDefinitionHandle] = hash;
   }
 
-  private readonly struct StructFieldTypesHasher2(AssemblyHasher assemblyHasher) : ISignatureHashProvider
+  private readonly struct StructFieldTypeUsageHashProvider(AssemblyHasher assemblyHasher) : ITypeUsageHashProvider
   {
     public ulong HashTypeDefinition(TypeDefinitionHandle handle, byte rawTypeKind)
     {
@@ -967,16 +961,6 @@ public class AssemblyHasher
     public ulong HashTypeReference(TypeReferenceHandle handle, byte rawTypeKind)
     {
       return assemblyHasher.GetOrComputeTypeReferenceHash(handle);
-    }
-  }
-
-  private sealed class StructFieldTypesHasher(AssemblyHasher surfaceHash)
-    : SignatureHasher(surfaceHash)
-  {
-    public override ulong GetTypeFromDefinition(
-      MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind)
-    {
-      return SurfaceHash.GetOrComputeNestedStructFieldTypesHash(handle);
     }
   }
 

@@ -7,7 +7,7 @@ using System.Reflection.Metadata;
 /// See Metadata Specification section II.23.2: Blobs and signatures.
 /// </summary>
 internal struct SignatureHasher<TSignatureHashProvider>
-  where TSignatureHashProvider : struct, ISignatureHashProvider
+  where TSignatureHashProvider : struct, ITypeUsageHashProvider
 {
   private TSignatureHashProvider myProvider;
   private readonly MetadataReader myMetadataReader;
@@ -258,10 +258,11 @@ internal struct SignatureHasher<TSignatureHashProvider>
   /// <summary>
   /// Decodes a field signature blob and advances the reader past the signature.
   /// </summary>
-  /// <param name="blobReader">The blob reader positioned at a field signature.</param>
   /// <returns>The decoded field type.</returns>
-  public ulong DecodeFieldSignature(ref BlobReader blobReader)
+  public ulong DecodeFieldSignature(BlobHandle signatureBlob)
   {
+    var blobReader = myMetadataReader.GetBlobReader(signatureBlob);
+
     var header = blobReader.ReadSignatureHeader();
     CheckHeader(header, SignatureKind.Field);
     return DecodeType(ref blobReader);
@@ -382,7 +383,7 @@ internal struct SignatureHasher<TSignatureHashProvider>
   }
 }
 
-public interface ISignatureHashProvider
+public interface ITypeUsageHashProvider
 {
   ulong HashTypeDefinition(TypeDefinitionHandle handle, byte rawTypeKind);
   ulong HashTypeReference(TypeReferenceHandle handle, byte rawTypeKind);
