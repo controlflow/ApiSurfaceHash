@@ -6,30 +6,21 @@ using System.Reflection.Metadata;
 /// Decodes signature blobs.
 /// See Metadata Specification section II.23.2: Blobs and signatures.
 /// </summary>
-public readonly struct SignatureDecoder<TType, TGenericContext>
+internal struct SignatureHasher<TSignatureHashProvider>
+  where TSignatureHashProvider : struct, ISignatureHashProvider
 {
-  private readonly ISignatureTypeProvider<TType, TGenericContext> myProvider;
-  private readonly MetadataReader myMetadataReaderOpt;
-  private readonly TGenericContext myGenericContext;
+  private TSignatureHashProvider myProvider;
+  private readonly MetadataReader myMetadataReader;
 
-  /// <summary>
-  /// Creates a new SignatureDecoder.
-  /// </summary>
+  /// <summary>Creates a new SignatureDecoder.</summary>
   /// <param name="provider">The provider used to obtain type symbols as the signature is decoded.</param>
   /// <param name="metadataReader">
   /// The metadata reader from which the signature was obtained. It may be null if the given provider allows it.
   /// </param>
-  /// <param name="genericContext">
-  /// Additional context needed to resolve generic parameters.
-  /// </param>
-  public SignatureDecoder(
-    ISignatureTypeProvider<TType, TGenericContext> provider,
-    MetadataReader metadataReader,
-    TGenericContext genericContext)
+  public SignatureHasher(TSignatureHashProvider provider, MetadataReader metadataReader)
   {
-    myMetadataReaderOpt = metadataReader;
     myProvider = provider;
-    myGenericContext = genericContext;
+    myMetadataReader = metadataReader;
   }
 
   /// <summary>
@@ -41,14 +32,15 @@ public readonly struct SignatureDecoder<TType, TGenericContext>
   /// </param>
   /// <returns>The decoded type.</returns>
   /// <exception cref="System.BadImageFormatException">The reader was not positioned at a valid signature type.</exception>
-  public TType DecodeType(ref BlobReader blobReader, bool allowTypeSpecifications = false)
+  public ulong DecodeType(ref BlobReader blobReader, bool allowTypeSpecifications = false)
   {
-    return DecodeType(ref blobReader, allowTypeSpecifications, blobReader.ReadCompressedInteger());
+    var typeCode = blobReader.ReadCompressedInteger();
+    return HashType(ref blobReader, allowTypeSpecifications, typeCode);
   }
 
-  private TType DecodeType(ref BlobReader blobReader, bool allowTypeSpecifications, int typeCode)
+  private ulong HashType(ref BlobReader blobReader, bool allowTypeSpecifications, int typeCode)
   {
-    TType elementType;
+    ulong elementTypeHash;
     int index;
 
     switch (typeCode)
@@ -71,61 +63,96 @@ public readonly struct SignatureDecoder<TType, TGenericContext>
       case (int)SignatureTypeCode.String:
       case (int)SignatureTypeCode.Void:
       case (int)SignatureTypeCode.TypedReference:
-        return myProvider.GetPrimitiveType((PrimitiveTypeCode)typeCode);
+      {
+        return (ulong)typeCode; // use code itself as a hash
+      }
 
       case (int)SignatureTypeCode.Pointer:
-        elementType = DecodeType(ref blobReader);
-        return myProvider.GetPointerType(elementType);
+      {
+        elementTypeHash = DecodeType(ref blobReader);
+        return LongHashCode.Combine(elementTypeHash, 3);
+      }
 
       case (int)SignatureTypeCode.ByReference:
-        elementType = DecodeType(ref blobReader);
-        return myProvider.GetByReferenceType(elementType);
+      {
+        elementTypeHash = DecodeType(ref blobReader);
+        return LongHashCode.Combine(elementTypeHash, 2);
+      }
 
       case (int)SignatureTypeCode.Pinned:
-        elementType = DecodeType(ref blobReader);
-        return myProvider.GetPinnedType(elementType);
+      {
+        elementTypeHash = DecodeType(ref blobReader);
+        return LongHashCode.Combine(elementTypeHash, 4);
+      }
 
       case (int)SignatureTypeCode.SZArray:
-        elementType = DecodeType(ref blobReader);
-        return myProvider.GetSZArrayType(elementType);
+      {
+        elementTypeHash = DecodeType(ref blobReader);
+        return LongHashCode.Combine(elementTypeHash, 1);
+      }
 
       case (int)SignatureTypeCode.FunctionPointer:
+      {
         var methodSignature = DecodeMethodSignature(ref blobReader);
-        return myProvider.GetFunctionPointerType(methodSignature);
+
+        var returnTypeHash = methodSignature.ReturnType;
+        var parameterTypesHash = LongHashCode.Combine(methodSignature.ParameterTypes);
+        var genericParametersCountHash = (ulong)methodSignature.GenericParameterCount;
+        var callingConventionHash = (ulong)methodSignature.Header.CallingConvention;
+
+        return LongHashCode.Combine(
+          returnTypeHash, parameterTypesHash, genericParametersCountHash, callingConventionHash);
+      }
 
       case (int)SignatureTypeCode.Array:
-        return DecodeArrayType(ref blobReader);
+      {
+        return HashArrayType(ref blobReader);
+      }
 
       case (int)SignatureTypeCode.RequiredModifier:
-        return DecodeModifiedType(ref blobReader, isRequired: true);
+      {
+        return HashModifiedType(ref blobReader, isRequired: true);
+      }
 
       case (int)SignatureTypeCode.OptionalModifier:
-        return DecodeModifiedType(ref blobReader, isRequired: false);
+      {
+        return HashModifiedType(ref blobReader, isRequired: false);
+      }
 
       case (int)SignatureTypeCode.GenericTypeInstance:
-        return DecodeGenericTypeInstance(ref blobReader);
+      {
+        return HashGenericTypeInstance(ref blobReader);
+      }
 
       case (int)SignatureTypeCode.GenericTypeParameter:
+      {
         index = blobReader.ReadCompressedInteger();
-        return myProvider.GetGenericTypeParameter(myGenericContext, index);
+
+        return LongHashCode.Combine((ulong)index, 1000);
+      }
 
       case (int)SignatureTypeCode.GenericMethodParameter:
+      {
         index = blobReader.ReadCompressedInteger();
-        return myProvider.GetGenericMethodParameter(myGenericContext, index);
+
+        return LongHashCode.Combine((ulong)index, 1000_000);
+      }
 
       case (int)SignatureTypeKind.Class:
       case (int)SignatureTypeKind.ValueType:
-        return DecodeTypeHandle(ref blobReader, (byte)typeCode, allowTypeSpecifications);
+      {
+        return HashTypeHandle(ref blobReader, (byte)typeCode, allowTypeSpecifications);
+      }
 
       default:
-        throw new BadImageFormatException("SR.Format(SR.UnexpectedSignatureTypeCode, typeCode)");
+        throw new BadImageFormatException("Unexpected signature type code: " + typeCode);
     }
   }
 
   /// <summary>
-  /// Decodes a list of types, with at least one instance that is preceded by its count as a compressed integer.
+  /// Hashes a list of types, with at least one instance that is preceded by its count as a compressed integer.
   /// </summary>
-  private ImmutableArray<TType> DecodeTypeSequence(ref BlobReader blobReader)
+  private ulong HashTypeSequence(ref BlobReader blobReader)
   {
     var count = blobReader.ReadCompressedInteger();
     if (count == 0)
@@ -133,17 +160,18 @@ public readonly struct SignatureDecoder<TType, TGenericContext>
       // This method is used for Local signatures and method specs, neither of which can have
       // 0 elements. Parameter sequences can have 0 elements, but they are handled separately
       // to deal with the sentinel/varargs case.
-      throw new BadImageFormatException("SR.SignatureTypeSequenceMustHaveAtLeastOneElement");
+      throw new BadImageFormatException("Signature type sequence must have at least one element");
     }
 
-    var types = ImmutableArray.CreateBuilder<TType>(count);
+    var typesHash = LongHashCode.FnvOffset;
 
-    for (var i = 0; i < count; i++)
+    for (var index = 0; index < count; index++)
     {
-      types.Add(DecodeType(ref blobReader));
+      var nextTypeHash = DecodeType(ref blobReader);
+      typesHash = LongHashCode.Combine(typesHash, nextTypeHash);
     }
 
-    return types.MoveToImmutable();
+    return typesHash;
   }
 
   /// <summary>
@@ -152,7 +180,7 @@ public readonly struct SignatureDecoder<TType, TGenericContext>
   /// <param name="blobReader">BlobReader positioned at a method signature.</param>
   /// <returns>The decoded method signature.</returns>
   /// <exception cref="System.BadImageFormatException">The method signature is invalid.</exception>
-  public MethodSignature<TType> DecodeMethodSignature(ref BlobReader blobReader)
+  public MethodSignature<ulong> DecodeMethodSignature(ref BlobReader blobReader)
   {
     var header = blobReader.ReadSignatureHeader();
     CheckMethodOrPropertyHeader(header);
@@ -165,17 +193,17 @@ public readonly struct SignatureDecoder<TType, TGenericContext>
 
     var parameterCount = blobReader.ReadCompressedInteger();
     var returnType = DecodeType(ref blobReader);
-    ImmutableArray<TType> parameterTypes;
+    ImmutableArray<ulong> parameterTypes;
     int requiredParameterCount;
 
     if (parameterCount == 0)
     {
       requiredParameterCount = 0;
-      parameterTypes = ImmutableArray<TType>.Empty;
+      parameterTypes = ImmutableArray<ulong>.Empty;
     }
     else
     {
-      var parameterBuilder = ImmutableArray.CreateBuilder<TType>(parameterCount);
+      var parameterBuilder = ImmutableArray.CreateBuilder<ulong>(parameterCount);
       int parameterIndex;
 
       for (parameterIndex = 0; parameterIndex < parameterCount; parameterIndex++)
@@ -186,7 +214,7 @@ public readonly struct SignatureDecoder<TType, TGenericContext>
           break;
         }
 
-        parameterBuilder.Add(DecodeType(ref blobReader, allowTypeSpecifications: false, typeCode: typeCode));
+        parameterBuilder.Add(HashType(ref blobReader, allowTypeSpecifications: false, typeCode: typeCode));
       }
 
       requiredParameterCount = parameterIndex;
@@ -198,7 +226,7 @@ public readonly struct SignatureDecoder<TType, TGenericContext>
       parameterTypes = parameterBuilder.MoveToImmutable();
     }
 
-    return new MethodSignature<TType>(header, returnType, requiredParameterCount, genericParameterCount,
+    return new MethodSignature<ulong>(header, returnType, requiredParameterCount, genericParameterCount,
       parameterTypes);
   }
 
@@ -207,11 +235,11 @@ public readonly struct SignatureDecoder<TType, TGenericContext>
   /// </summary>
   /// <param name="blobReader">A BlobReader positioned at a valid method specification signature.</param>
   /// <returns>The types used to instantiate a generic method via the method specification.</returns>
-  public ImmutableArray<TType> DecodeMethodSpecificationSignature(ref BlobReader blobReader)
+  public ulong DecodeMethodSpecificationSignature(ref BlobReader blobReader)
   {
     var header = blobReader.ReadSignatureHeader();
     CheckHeader(header, SignatureKind.MethodSpecification);
-    return DecodeTypeSequence(ref blobReader);
+    return HashTypeSequence(ref blobReader);
   }
 
   /// <summary>
@@ -220,11 +248,11 @@ public readonly struct SignatureDecoder<TType, TGenericContext>
   /// <param name="blobReader">The blob reader positioned at a local variable signature.</param>
   /// <returns>The local variable types.</returns>
   /// <exception cref="System.BadImageFormatException">The local variable signature is invalid.</exception>
-  public ImmutableArray<TType> DecodeLocalSignature(ref BlobReader blobReader)
+  public ulong DecodeLocalSignature(ref BlobReader blobReader)
   {
     var header = blobReader.ReadSignatureHeader();
     CheckHeader(header, SignatureKind.LocalVariables);
-    return DecodeTypeSequence(ref blobReader);
+    return HashTypeSequence(ref blobReader);
   }
 
   /// <summary>
@@ -232,66 +260,65 @@ public readonly struct SignatureDecoder<TType, TGenericContext>
   /// </summary>
   /// <param name="blobReader">The blob reader positioned at a field signature.</param>
   /// <returns>The decoded field type.</returns>
-  public TType DecodeFieldSignature(ref BlobReader blobReader)
+  public ulong DecodeFieldSignature(ref BlobReader blobReader)
   {
     var header = blobReader.ReadSignatureHeader();
     CheckHeader(header, SignatureKind.Field);
     return DecodeType(ref blobReader);
   }
 
-  private TType DecodeArrayType(ref BlobReader blobReader)
+  private ulong HashArrayType(ref BlobReader blobReader)
   {
-    // PERF_TODO: Cache/reuse common case of small number of all-zero lower-bounds.
-
-    var elementType = DecodeType(ref blobReader);
+    var elementTypeHash = DecodeType(ref blobReader);
     var rank = blobReader.ReadCompressedInteger();
-    var sizes = ImmutableArray<int>.Empty;
-    var lowerBounds = ImmutableArray<int>.Empty;
+    var sizesHash = LongHashCode.FnvOffset;
+    var lowerBoundsHash = LongHashCode.FnvOffset;
 
     var sizesCount = blobReader.ReadCompressedInteger();
     if (sizesCount > 0)
     {
-      var builder = ImmutableArray.CreateBuilder<int>(sizesCount);
-      for (var i = 0; i < sizesCount; i++)
+      for (var index = 0; index < sizesCount; index++)
       {
-        builder.Add(blobReader.ReadCompressedInteger());
+        var size = blobReader.ReadCompressedInteger();
+        sizesHash = LongHashCode.Combine(sizesHash, (ulong)size);
       }
-
-      sizes = builder.MoveToImmutable();
     }
 
     var lowerBoundsCount = blobReader.ReadCompressedInteger();
     if (lowerBoundsCount > 0)
     {
-      var builder = ImmutableArray.CreateBuilder<int>(lowerBoundsCount);
-      for (var i = 0; i < lowerBoundsCount; i++)
+      for (var index = 0; index < lowerBoundsCount; index++)
       {
-        builder.Add(blobReader.ReadCompressedSignedInteger());
+        var lowerBound = blobReader.ReadCompressedSignedInteger();
+        lowerBoundsHash = LongHashCode.Combine(lowerBoundsHash, (ulong)lowerBound);
       }
-
-      lowerBounds = builder.MoveToImmutable();
     }
 
-    var arrayShape = new ArrayShape(rank, sizes, lowerBounds);
-    return myProvider.GetArrayType(elementType, arrayShape);
+    return LongHashCode.Combine(
+      elementTypeHash,
+      (ulong)rank,
+      lowerBoundsHash,
+      sizesHash);
   }
 
-  private TType DecodeGenericTypeInstance(ref BlobReader blobReader)
+  private ulong HashGenericTypeInstance(ref BlobReader blobReader)
   {
-    var genericType = DecodeType(ref blobReader);
-    var types = DecodeTypeSequence(ref blobReader);
-    return myProvider.GetGenericInstantiation(genericType, types);
+    var genericTypeHash = DecodeType(ref blobReader);
+    var typeArgumentsHash = HashTypeSequence(ref blobReader);
+
+    return LongHashCode.Combine(genericTypeHash, typeArgumentsHash);
   }
 
-  private TType DecodeModifiedType(ref BlobReader blobReader, bool isRequired)
+  private ulong HashModifiedType(ref BlobReader blobReader, bool isRequired)
   {
-    var modifier = DecodeTypeHandle(ref blobReader, 0, allowTypeSpecifications: true);
-    var unmodifiedType = DecodeType(ref blobReader);
+    var modifierHash = HashTypeHandle(ref blobReader, 0, allowTypeSpecifications: true);
+    var unmodifiedTypeHash = DecodeType(ref blobReader);
 
-    return myProvider.GetModifiedType(modifier, unmodifiedType, isRequired);
+    // note: `ref readonly` returns are encoded via T& modreq([InAttribute])
+    return LongHashCode.Combine(unmodifiedTypeHash, modifierHash, isRequired ? 42UL : 0UL);
   }
 
-  private TType DecodeTypeHandle(ref BlobReader blobReader, byte rawTypeKind, bool allowTypeSpecifications)
+  private ulong HashTypeHandle(ref BlobReader blobReader, byte rawTypeKind, bool allowTypeSpecifications)
   {
     var handle = blobReader.ReadTypeHandle();
     if (!handle.IsNil)
@@ -299,26 +326,36 @@ public readonly struct SignatureDecoder<TType, TGenericContext>
       switch (handle.Kind)
       {
         case HandleKind.TypeDefinition:
-          return myProvider.GetTypeFromDefinition(myMetadataReaderOpt, (TypeDefinitionHandle)handle, rawTypeKind);
+        {
+          return myProvider.HashTypeDefinition((TypeDefinitionHandle)handle, rawTypeKind);
+        }
 
         case HandleKind.TypeReference:
-          return myProvider.GetTypeFromReference(myMetadataReaderOpt, (TypeReferenceHandle)handle, rawTypeKind);
+        {
+          return myProvider.HashTypeReference((TypeReferenceHandle)handle, rawTypeKind);
+        }
 
         case HandleKind.TypeSpecification:
+        {
           if (!allowTypeSpecifications)
           {
             // To prevent cycles, the token following (CLASS | VALUETYPE) must not be a type spec.
             // https://github.com/dotnet/coreclr/blob/8ff2389204d7c41b17eff0e9536267aea8d6496f/src/md/compiler/mdvalidator.cpp#L6154-L6160
-            throw new BadImageFormatException("SR.NotTypeDefOrRefHandle");
+            throw new BadImageFormatException("Not typedef or typeref handle");
           }
 
-          return myProvider.GetTypeFromSpecification(myMetadataReaderOpt, myGenericContext,
-            (TypeSpecificationHandle)handle, rawTypeKind);
+          // note: normally should be unreachable
+          var typeSpecification = myMetadataReader.GetTypeSpecification((TypeSpecificationHandle)handle);
+          var typeSpecBlobReader = myMetadataReader.GetBlobReader(typeSpecification.Signature);
+          return DecodeType(ref typeSpecBlobReader);
+        }
 
         default:
+        {
           // indicates an error returned from ReadTypeHandle, otherwise unreachable.
           Debug.Assert(handle.IsNil); // will fall through to throw in release.
           break;
+        }
       }
     }
 
@@ -343,4 +380,10 @@ public readonly struct SignatureDecoder<TType, TGenericContext>
         "SR.Format(SR.UnexpectedSignatureHeader2, SignatureKind.Property, SignatureKind.Method, header.Kind, header.RawValue)");
     }
   }
+}
+
+public interface ISignatureHashProvider
+{
+  ulong HashTypeDefinition(TypeDefinitionHandle handle, byte rawTypeKind);
+  ulong HashTypeReference(TypeReferenceHandle handle, byte rawTypeKind);
 }

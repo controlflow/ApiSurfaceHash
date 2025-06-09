@@ -16,9 +16,11 @@ using System.Security.Cryptography;
 public class AssemblyHasher
 {
   private readonly MetadataReader myMetadataReader;
-  private readonly SignatureHasher mySignatureHasher;
   private readonly AssemblyHasherOptions myHasherOptions;
+  private readonly SignatureHasher mySignatureHasher;
+  private readonly SignatureHasher2 mySignatureHasher2;
   private readonly StructFieldTypesHasher myStructFieldTypesHasher;
+  private readonly StructFieldTypesHasher2 myStructFieldTypesHasher2;
   private readonly Dictionary<StringHandle, ulong> myStringHashes = new();
   // todo: split to increase locality?
   private readonly Dictionary<EntityHandle, ulong> myHashes = new();
@@ -32,7 +34,9 @@ public class AssemblyHasher
   {
     myMetadataReader = metadataReader;
     mySignatureHasher = new SignatureHasher(this);
+    mySignatureHasher2 = new SignatureHasher2(this);
     myStructFieldTypesHasher = new StructFieldTypesHasher(this);
+    myStructFieldTypesHasher2 = new StructFieldTypesHasher2(this);
     myHasherOptions = options;
   }
 
@@ -352,6 +356,14 @@ public class AssemblyHasher
 
     var fieldNameHash = GetOrComputeStringHash(fieldDefinition.Name);
     var fieldTypeHash = fieldDefinition.DecodeSignature(mySignatureHasher, genericContext: null);
+
+    var signatureHasher = new SignatureHasher<SignatureHasher2>(mySignatureHasher2, myMetadataReader);
+    var fieldSignatureBlobReader = myMetadataReader.GetBlobReader(fieldDefinition.Signature);
+
+    var fieldTypeHash2 = signatureHasher.DecodeFieldSignature(ref fieldSignatureBlobReader);
+    if (fieldTypeHash2 != fieldTypeHash)
+      throw new InvalidOperationException();
+
     var fieldConstantValueHash = GetOrComputeConstantValueHash(fieldDefinition.GetDefaultValue());
 
     var fieldCustomAttributesHash = ComputeCustomAttributesSurfaceHash(fieldDefinition.GetCustomAttributes());
@@ -793,6 +805,19 @@ public class AssemblyHasher
   #endregion
   #region Signature hashing
 
+  private readonly struct SignatureHasher2(AssemblyHasher assemblyHasher) : ISignatureHashProvider
+  {
+    public ulong HashTypeDefinition(TypeDefinitionHandle handle, byte rawTypeKind)
+    {
+      return assemblyHasher.GetOrComputeTypeUsageHash(handle);
+    }
+
+    public ulong HashTypeReference(TypeReferenceHandle handle, byte rawTypeKind)
+    {
+      return assemblyHasher.GetOrComputeTypeReferenceHash(handle);
+    }
+  }
+
   // todo: replace with non-allocating direct decoder
   private class SignatureHasher(AssemblyHasher surfaceHash)
     : ISignatureTypeProvider<ulong, object?>
@@ -816,7 +841,8 @@ public class AssemblyHasher
 
     public ulong GetGenericInstantiation(ulong genericTypeHash, ImmutableArray<ulong> typeArgumentsHashes)
     {
-      return LongHashCode.Combine(genericTypeHash, LongHashCode.Combine(typeArgumentsHashes));
+      var combine = LongHashCode.Combine(typeArgumentsHashes);
+      return LongHashCode.Combine(genericTypeHash, combine);
     }
 
     public ulong GetSZArrayType(ulong elementTypeHash) => LongHashCode.Combine(elementTypeHash, 1);
@@ -856,8 +882,8 @@ public class AssemblyHasher
         returnTypeHash, parameterTypesHash, genericParametersCountHash, callingConventionHash);
     }
 
-    public ulong GetGenericMethodParameter(object? _, int index) => LongHashCode.Combine((ulong)index, 1000);
-    public ulong GetGenericTypeParameter(object? _, int index) => LongHashCode.Combine((ulong)index, 1000_000);
+    public ulong GetGenericMethodParameter(object? _, int index) => LongHashCode.Combine((ulong)index, 1000_000);
+    public ulong GetGenericTypeParameter(object? _, int index) => LongHashCode.Combine((ulong)index, 1000);
 
     public ulong GetModifiedType(ulong modifierHash, ulong unmodifiedTypeHash, bool isRequired)
     {
@@ -929,6 +955,19 @@ public class AssemblyHasher
     }
 
     return myStructFieldTypeHashes[typeDefinitionHandle] = hash;
+  }
+
+  private readonly struct StructFieldTypesHasher2(AssemblyHasher assemblyHasher) : ISignatureHashProvider
+  {
+    public ulong HashTypeDefinition(TypeDefinitionHandle handle, byte rawTypeKind)
+    {
+      return assemblyHasher.GetOrComputeNestedStructFieldTypesHash(handle);
+    }
+
+    public ulong HashTypeReference(TypeReferenceHandle handle, byte rawTypeKind)
+    {
+      return assemblyHasher.GetOrComputeTypeReferenceHash(handle);
+    }
   }
 
   private sealed class StructFieldTypesHasher(AssemblyHasher surfaceHash)

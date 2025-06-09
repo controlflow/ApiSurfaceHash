@@ -3,6 +3,8 @@ using NUnit.Framework;
 
 namespace ApiSurfaceHash.Tests;
 
+// todo: vararg tests
+
 [TestFixtureSource(typeof(CompilationTests), nameof(GetCompilationVariations))]
 public class CompilationTests(RoslynCompiler compiler)
 {
@@ -811,6 +813,10 @@ public class CompilationTests(RoslynCompiler compiler)
       public class B;
       public void M<T>() where T : B, I2, I1, new() { }
       """);
+
+    AssertSurfaceEqual(
+      "public class C<T, X> { public C<X, T[]> Inner; public void M<U>(C<U, T>[] c) { } }",
+      "public class C<U, Y> { public C<Y, U[]> Inner; public void M<T>(C<T, U>[] c) { } }");
   }
 
   [Test]
