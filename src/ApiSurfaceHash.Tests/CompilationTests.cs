@@ -529,6 +529,19 @@ public class CompilationTests(RoslynCompiler compiler)
       """);
 
     AssertSurfaceNotEqual(
+      [
+        """
+        public class A(int x) : System.Attribute;
+        [A(1)] public class C;
+        """,
+        """
+        public class A(int x) : System.Attribute;
+        [A(2)] public class C;
+        """
+      ],
+      AssemblyHasherOptions.IncludeAllAttributes);
+
+    AssertSurfaceNotEqual(
       PreserveAttrsNs +
       """
       [A((int)42)]
@@ -627,6 +640,31 @@ public class CompilationTests(RoslynCompiler compiler)
         [MarshalAs(UnmanagedType.LPWStr)] public string Text;
       }
       """);
+  }
+
+  [Test]
+  public void TestInterfaceMembers()
+  {
+    AssertSurfaceEqual(
+      "internal interface I1 { void M(); } public class C : I1 { void I1.M() { } }",
+      "internal interface I2 { void M(); } public class C : I2 { void I2.M() { } }");
+    AssertSurfaceEqual(
+      "internal interface I1 { void M(); } public class C : I1 { public void M() { } }",
+      "internal interface I2 { void M(); } public class C : I2 { public void M() { } }");
+
+    if (!compiler.UseNetFramework35Target)
+    {
+      AssertSurfaceNotEqual(
+        "public interface I { void M(); }", // abstract
+        "public interface I { void M() { } }"); // virtual
+
+      AssertSurfaceEqual(
+        "public interface I { }",
+        "public interface I { private static void SM() { } }");
+      AssertSurfaceNotEqual(
+        "public interface I { protected static void SM() { } }",
+        "public interface I { protected virtual static void SM() { } }");
+    }
   }
 
   [Test]
@@ -838,12 +876,17 @@ public class CompilationTests(RoslynCompiler compiler)
 
   private void AssertSurfaceNotEqual(params IReadOnlyList<string> sourceCodes)
   {
+    AssertSurfaceNotEqual(sourceCodes, AssemblyHasherOptions.None);
+  }
+
+  private void AssertSurfaceNotEqual(IReadOnlyList<string> sourceCodes, AssemblyHasherOptions options)
+  {
     var hashes = new Dictionary<ulong, string>();
 
     foreach (var sourceCode in sourceCodes)
     {
       var peBytes = compiler.Compile(sourceCode);
-      var surfaceHash = AssemblyHasher.Run(peBytes);
+      var surfaceHash = AssemblyHasher.Run(peBytes, options);
 
       if (hashes.TryGetValue(surfaceHash, out var previousCode))
       {

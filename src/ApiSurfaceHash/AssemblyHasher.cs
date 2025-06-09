@@ -8,18 +8,16 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 
 // todo: typeof(T) in attribute can reference internal/private type, via string; how enum values are stored?
-// todo: SAMs tests
-// todo: explicit interface implementations
 // todo: should internal attrs be stripped despite [InternalsVisibleTo]?
 // todo: check coverage
 // todo: test memory traffic
-// todo: include all attrs mode for roslyn analyzers
-// todo: explicit NRT context
+// todo: do we need parallelism per assembly?
 
 public class AssemblyHasher
 {
   private readonly MetadataReader myMetadataReader;
   private readonly SignatureHasher mySignatureHasher;
+  private readonly AssemblyHasherOptions myHasherOptions;
   private readonly StructFieldTypesHasher myStructFieldTypesHasher;
   private readonly Dictionary<StringHandle, ulong> myStringHashes = new();
   // todo: split to increase locality?
@@ -30,20 +28,21 @@ public class AssemblyHasher
   private EntityHandle mySystemValueTypeClassHandle;
   private bool myInternalsAreVisible;
 
-  private AssemblyHasher(MetadataReader metadataReader)
+  private AssemblyHasher(MetadataReader metadataReader, AssemblyHasherOptions options)
   {
     myMetadataReader = metadataReader;
     mySignatureHasher = new SignatureHasher(this);
     myStructFieldTypesHasher = new StructFieldTypesHasher(this);
+    myHasherOptions = options;
   }
 
   #region Entry point
 
-  public static ulong Run(PEReader peReader)
+  public static ulong Run(PEReader peReader, AssemblyHasherOptions options = AssemblyHasherOptions.None)
   {
     var metadataReader = peReader.GetMetadataReader(MetadataReaderOptions.Default);
 
-    var surfaceHasher = new AssemblyHasher(metadataReader);
+    var surfaceHasher = new AssemblyHasher(metadataReader, options);
 
     var assemblyDefinition = metadataReader.GetAssemblyDefinition();
     var moduleDefinition = metadataReader.GetModuleDefinition();
@@ -102,28 +101,30 @@ public class AssemblyHasher
     return assemblyHash;
   }
 
-  public static unsafe ulong Run(byte* imagePtr, int imageLength)
+  [DebuggerStepThrough]
+  public static unsafe ulong Run(byte* imagePtr, int imageLength, AssemblyHasherOptions options = AssemblyHasherOptions.None)
   {
     using var peReader = new PEReader(imagePtr, imageLength);
 
-    return Run(peReader);
+    return Run(peReader, options);
   }
 
   [DebuggerStepThrough]
-  public static unsafe ulong Run(Span<byte> assemblyBytes)
+  public static unsafe ulong Run(Span<byte> assemblyBytes, AssemblyHasherOptions options = AssemblyHasherOptions.None)
   {
     fixed (byte* ptr = &assemblyBytes[0])
     {
-      return Run(ptr, assemblyBytes.Length);
+      return Run(ptr, assemblyBytes.Length, options);
     }
   }
 
-  public static ulong Run(Stream peStream)
+  [DebuggerStepThrough]
+  public static ulong Run(Stream peStream, AssemblyHasherOptions options = AssemblyHasherOptions.None)
   {
     // note: cannot use `PrefetchMetadata` options because of F# resources
     using var peReader = new PEReader(peStream);
 
-    return Run(peReader);
+    return Run(peReader, options);
   }
 
   #endregion
@@ -398,9 +399,10 @@ public class AssemblyHasher
       var parameterCustomAttributesHash = ComputeCustomAttributesSurfaceHash(parameter.GetCustomAttributes());
       var parameterOptionalValueHash = GetOrComputeConstantValueHash(parameter.GetDefaultValue());
 
-      methodParametersHash = LongHashCode.Combine(
-        methodParametersHash, LongHashCode.Combine(
-          parameterNameHash, parameterAttributesHash, parameterCustomAttributesHash, parameterOptionalValueHash));
+      var parameterHash = LongHashCode.Combine(
+        parameterNameHash, parameterAttributesHash, parameterCustomAttributesHash, parameterOptionalValueHash);
+
+      methodParametersHash = LongHashCode.Combine(methodParametersHash, parameterHash);
     }
 
     var methodDecodedSignature = methodDefinition.DecodeSignature(mySignatureHasher, genericContext: null);
@@ -492,8 +494,6 @@ public class AssemblyHasher
   #endregion
   #region Attributes hashing
 
-  // todo: not all attrs are part of the API "surface"? only special ones?
-  // todo: assembly attrs
   private ulong ComputeCustomAttributesSurfaceHash(CustomAttributeHandleCollection customAttributes)
   {
     using var attributeHashes = new SortedHashesSet();
@@ -556,8 +556,8 @@ public class AssemblyHasher
 
       var attributeConstructorUsageHash = GetOrComputeMemberUsageHash(attribute.Constructor);
 
-      // todo: this is not correct, will decode it some day
-      // todo: or is it? strings for types in blob
+      // note: attribute blobs do not have references to metadata tables (type refs are stored as a strings)
+      //       so it should be enough to just hash the whole blob
       var attributeBlobReader = myMetadataReader.GetBlobReader(attribute.Value);
       var attributeBlobHash = LongHashCode.FromBlob(attributeBlobReader);
 
@@ -570,6 +570,12 @@ public class AssemblyHasher
         if (myIgnoredAttributeTypes.Contains(entityHandle))
           return false; // [CompilerGenerated], etc
 
+        if ((myHasherOptions & AssemblyHasherOptions.IncludeAllAttributes) != 0)
+          return true;
+
+        // normally only special attributes are included - those who can affect C# compilation
+        // note: we do not check if the typedef represents a public type or not,
+        //       since C# emits embedded attributes as internal types
         if (myIncludedAttributeTypes.Contains(entityHandle))
           return true;
 
@@ -1213,6 +1219,13 @@ public class AssemblyHasher
     = LongHashCode.FromUtf8String(".ctor"u8);
 
   #endregion
+}
+
+[Flags]
+public enum AssemblyHasherOptions
+{
+  None = 0,
+  IncludeAllAttributes = 1 << 0
 }
 
 /// Thin abstraction to make list poolable
