@@ -871,8 +871,7 @@ public class CompilationTests(RoslynCompiler compiler)
 
   private void AssertSurfaceEqual(params IReadOnlyList<string> sourceCodes)
   {
-    if (sourceCodes.Count == 0)
-      throw new ArgumentOutOfRangeException(nameof(sourceCodes));
+    if (sourceCodes.Count < 2) Assert.Inconclusive("Nothing to compare against");
 
     ulong? expectedHash = null;
 
@@ -899,6 +898,8 @@ public class CompilationTests(RoslynCompiler compiler)
 
   private void AssertSurfaceNotEqual(IReadOnlyList<string> sourceCodes, AssemblyHasherOptions options)
   {
+    if (sourceCodes.Count < 2) Assert.Inconclusive("Nothing to compare against");
+
     var hashes = new Dictionary<ulong, string>();
 
     foreach (var sourceCode in sourceCodes)
@@ -930,8 +931,7 @@ public class CompilationTests(RoslynCompiler compiler)
 
   private void AssertMemberSurfaceEqual(params IReadOnlyList<string> memberSources)
   {
-    if (memberSources.Count == 0)
-      throw new ArgumentOutOfRangeException(nameof(memberSources));
+    if (memberSources.Count < 2) Assert.Inconclusive("Nothing to compare against");
 
     ulong? expectedHash = null;
 
@@ -950,11 +950,13 @@ public class CompilationTests(RoslynCompiler compiler)
     }
   }
 
-  private void AssertMemberSurfaceNotEqual(params IEnumerable<string> members)
+  private void AssertMemberSurfaceNotEqual(params IReadOnlyList<string> memberSources)
   {
+    if (memberSources.Count < 2) Assert.Inconclusive("Nothing to compare against");
+
     var hashes = new Dictionary<ulong, string>();
 
-    foreach (var member in members)
+    foreach (var member in memberSources)
     {
       var memberSurfaceHash = GetMemberSurfaceHash(member);
 
