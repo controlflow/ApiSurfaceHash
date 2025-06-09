@@ -788,6 +788,16 @@ public class AssemblyHasher
     {
       myIncludedAttributeTypes.Add(typeHandle);
     }
+
+    // System.Runtime.InteropServices
+    else if (namespaceHash == SystemRuntimeInteropServicesNamespaceHash
+             && myMetadataReader.StringComparer.Equals(namespaceHandle, SystemRuntimeInteropServicesNamespace))
+    {
+      if (nameHash == UnmanagedCallersOnlyAttributeNameHash)
+      {
+        myIncludedAttributeTypes.Add(typeHandle);
+      }
+    }
   }
 
   #endregion
@@ -809,7 +819,11 @@ public class AssemblyHasher
   [Pure]
   private static ulong GetSignatureTypesHash(MethodSignatureHash signature)
   {
-    return LongHashCode.Combine(signature.ParameterTypesHash, signature.ReturnTypeHash);
+    // note: varargs (C# __arglist) is encoded through the calling convention flag
+    var callingConventionHash = (ulong)signature.Header.CallingConvention;
+
+    return LongHashCode.Combine(
+      signature.ParameterTypesHash, signature.ReturnTypeHash, callingConventionHash);
   }
 
   #endregion
@@ -1123,6 +1137,7 @@ public class AssemblyHasher
   private const string SystemNamespace = "System";
   private const string SystemRuntimeCompilerServicesNamespace = "System.Runtime.CompilerServices";
   private const string SystemDiagnosticsCodeAnalysisNamespace = "System.Diagnostics.CodeAnalysis";
+  private const string SystemRuntimeInteropServicesNamespace = "System.Runtime.InteropServices";
 
   private const string ValueTypeClassName = nameof(ValueType);
   private const string InternalsVisibleToAttributeName = nameof(InternalsVisibleToAttribute);
@@ -1134,6 +1149,8 @@ public class AssemblyHasher
     = LongHashCode.FromUtf8String("System.Runtime.CompilerServices"u8);
   private static readonly ulong SystemDiagnosticsCodeAnalysisNamespaceHash
     = LongHashCode.FromUtf8String("System.Diagnostics.CodeAnalysis"u8);
+  private static readonly ulong SystemRuntimeInteropServicesNamespaceHash
+    = LongHashCode.FromUtf8String("System.Runtime.InteropServices"u8);
 
   private static readonly ulong ValueTypeClassNameHash
     = LongHashCode.FromUtf8String("ValueType"u8);
@@ -1149,6 +1166,8 @@ public class AssemblyHasher
     = LongHashCode.FromUtf8String("InternalsVisibleToAttribute"u8);
   private static readonly ulong CompilerGeneratedAttributeNameHash
     = LongHashCode.FromUtf8String("CompilerGeneratedAttribute"u8);
+  private static readonly ulong UnmanagedCallersOnlyAttributeNameHash
+    = LongHashCode.FromUtf8String("UnmanagedCallersOnlyAttribute"u8);
   private static readonly ulong CtorNameHash
     = LongHashCode.FromUtf8String(".ctor"u8);
 

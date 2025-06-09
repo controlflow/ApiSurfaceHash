@@ -3,8 +3,6 @@ using NUnit.Framework;
 
 namespace ApiSurfaceHash.Tests;
 
-// todo: vararg tests
-
 [TestFixtureSource(typeof(CompilationTests), nameof(GetCompilationVariations))]
 public class CompilationTests(RoslynCompiler compiler)
 {
@@ -334,6 +332,13 @@ public class CompilationTests(RoslynCompiler compiler)
       "public ref int M(int x) => throw null!;",
       "public ref int M(ref int x) => throw null!;",
       "public ref readonly int M(ref int x) => throw null!;");
+
+    // varargs
+    AssertMemberSurfaceNotEqual(
+      "public void VarArgs() { }",
+      "public void VarArgs(__arglist) { }",
+      "public void VarArgs(int x) { }",
+      "public void VarArgs(int x, __arglist) { }");
   }
 
   [Test]
@@ -582,6 +587,13 @@ public class CompilationTests(RoslynCompiler compiler)
       AssertMemberSurfaceNotEqual(
         "public void M(ref string? x) { }",
         "public void M([System.Diagnostics.CodeAnalysis.DisallowNull] ref string? x) { }");
+    }
+
+    if (!compiler.UseNetFramework35Target)
+    {
+      AssertMemberSurfaceNotEqual(
+        "public static void M() { }",
+        "[System.Runtime.InteropServices.UnmanagedCallersOnly] public static void M() { }");
     }
   }
 

@@ -2,9 +2,8 @@ using System.Diagnostics;
 using System.Diagnostics.Contracts;
 using System.Reflection.Metadata;
 
-// todo: fix exception messages
-
-/// Decodes and hashes signature blobs. Zero allocating analog of 'SignatureDecoder' type.
+/// Decodes and hashes signature blobs.
+/// Zero-allocating version of the 'SignatureDecoder' type.
 /// See Metadata Specification section II.23.2: Blobs and signatures
 internal struct SignatureHasher<TSignatureHashProvider>
   where TSignatureHashProvider : struct, ITypeUsageHashProvider
@@ -188,36 +187,22 @@ internal struct SignatureHasher<TSignatureHashProvider>
     var parameterCount = blobReader.ReadCompressedInteger();
     var returnType = HashType(ref blobReader);
     var parameterTypesHash = LongHashCode.FnvOffset;
-    int requiredParameterCount; // todo: is it even needed? check varargs
 
-    if (parameterCount == 0)
-    {
-      requiredParameterCount = 0;
-    }
-    else
+    if (parameterCount != 0)
     {
       int parameterIndex;
 
       for (parameterIndex = 0; parameterIndex < parameterCount; parameterIndex++)
       {
         var typeCode = blobReader.ReadCompressedInteger();
-        if (typeCode == (int)SignatureTypeCode.Sentinel)
-          break; // vararg start
+        if (typeCode == (int)SignatureTypeCode.Sentinel) continue;
 
         var parameterTypeHash = HashType(ref blobReader, allowTypeSpecifications: false, typeCode: typeCode);
         parameterTypesHash = LongHashCode.Combine(parameterTypesHash, parameterTypeHash);
       }
-
-      requiredParameterCount = parameterIndex;
-      for (; parameterIndex < parameterCount; parameterIndex++)
-      {
-        var parameterTypeHash = HashType(ref blobReader);
-        parameterTypesHash = LongHashCode.Combine(parameterTypesHash, parameterTypeHash);
-      }
     }
 
-    return new MethodSignatureHash(
-      header, returnType, requiredParameterCount, genericParameterCount, parameterTypesHash);
+    return new MethodSignatureHash(header, returnType, genericParameterCount, parameterTypesHash);
   }
 
   /// Decodes and hashes a field signature blob and advances the reader past the signature.
@@ -348,13 +333,11 @@ internal struct SignatureHasher<TSignatureHashProvider>
 public readonly struct MethodSignatureHash(
   SignatureHeader header,
   ulong returnTypeHash,
-  int requiredParameterCount,
   int genericParameterCount,
   ulong parameterTypesHash)
 {
   public SignatureHeader Header { get; } = header;
   public ulong ReturnTypeHash { get; } = returnTypeHash;
-  public int RequiredParameterCount { get; } = requiredParameterCount;
   public int GenericParameterCount { get; } = genericParameterCount;
   public ulong ParameterTypesHash { get; } = parameterTypesHash;
 }
