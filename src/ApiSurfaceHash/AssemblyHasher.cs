@@ -1,5 +1,4 @@
-﻿using System.Collections.Immutable;
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Diagnostics.Contracts;
 using System.Reflection;
 using System.Reflection.Metadata;
@@ -8,7 +7,6 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 
 // todo: typeof(T) in attribute can reference internal/private type, via string; how enum values are stored?
-// todo: should internal attrs be stripped despite [InternalsVisibleTo]?
 // todo: check coverage
 // todo: test memory traffic
 // todo: do we need parallelism per assembly?
@@ -17,8 +15,6 @@ public class AssemblyHasher
 {
   private readonly MetadataReader myMetadataReader;
   private readonly AssemblyHasherOptions myHasherOptions;
-  [Obsolete]
-  private readonly SignatureHasherOld mySignatureHasher;
   private SignatureHasher<TypeUsageHashProvider> myTypeUsageHasher;
   private SignatureHasher<StructFieldTypeUsageHashProvider> myStructFieldTypeUsageHasher;
   private readonly Dictionary<StringHandle, ulong> myStringHashes = new();
@@ -33,7 +29,6 @@ public class AssemblyHasher
   private AssemblyHasher(MetadataReader metadataReader, AssemblyHasherOptions options)
   {
     myMetadataReader = metadataReader;
-    mySignatureHasher = new SignatureHasherOld(this);
     myTypeUsageHasher = new SignatureHasher<TypeUsageHashProvider>(
       new TypeUsageHashProvider(this), metadataReader);
     myStructFieldTypeUsageHasher = new SignatureHasher<StructFieldTypeUsageHashProvider>(
@@ -140,7 +135,7 @@ public class AssemblyHasher
   {
     var assemblyNameHash = GetOrComputeStringHash(assemblyDefinition.Name);
 
-    // note: do not include assembly version, like old R#'s surface hasher
+    // note: do not include the assembly version, like old R#'s surface hasher
     // var assemblyVersionHash = LongHashCode.FromVersion(assemblyDefinition.Version);
 
     var assemblyCultureHash = GetOrComputeStringHash(assemblyDefinition.Culture);
@@ -238,7 +233,7 @@ public class AssemblyHasher
           typeMemberHashes.Add(ComputeFieldDefinitionSurfaceHash(fieldDefinition));
         }
 
-        // for struct declarations we have to include the types of all the instance fields
+        // for struct declarations, we have to include the types of all the instance fields
         // to track breaking changes like definite assignment errors for empty vs. non-empty structs
         // and `unmanaged` generic constraint checking (has managed references or not)
         if (isValueType
@@ -357,7 +352,7 @@ public class AssemblyHasher
     var fieldAttributesHash = (ulong)fieldAttributes;
 
     var fieldNameHash = GetOrComputeStringHash(fieldDefinition.Name);
-    var fieldTypeHash = myTypeUsageHasher.DecodeFieldSignature(fieldDefinition.Signature);
+    var fieldTypeHash = myTypeUsageHasher.HashFieldSignature(fieldDefinition.Signature);
 
     var fieldConstantValueHash = GetOrComputeConstantValueHash(fieldDefinition.GetDefaultValue());
     var fieldCustomAttributesHash = ComputeCustomAttributesSurfaceHash(fieldDefinition.GetCustomAttributes());
@@ -411,11 +406,10 @@ public class AssemblyHasher
       methodParametersHash = LongHashCode.Combine(methodParametersHash, parameterHash);
     }
 
-    var methodDecodedSignature = methodDefinition.DecodeSignature(mySignatureHasher, genericContext: null);
-    var methodSignatureHash = GetSignatureHash(methodDecodedSignature);
+    var methodSignature = myTypeUsageHasher.HashMethodSignature(methodDefinition.Signature);
+    var methodSignatureHash = GetSignatureTypesHash(methodSignature);
 
-    var methodCombinedSignatureHash = LongHashCode.Combine(
-      methodNameHash, methodSignatureHash, methodTypeParametersHash);
+    var methodCombinedSignatureHash = LongHashCode.Combine(methodNameHash, methodSignatureHash, methodTypeParametersHash);
 
     var methodCustomAttributesHash = ComputeCustomAttributesSurfaceHash(methodDefinition.GetCustomAttributes());
 
@@ -652,8 +646,8 @@ public class AssemblyHasher
         {
           case MemberReferenceKind.Method:
           {
-            var methodSignature = memberReference.DecodeMethodSignature(mySignatureHasher, genericContext: null);
-            var methodSignatureHash = GetSignatureHash(methodSignature);
+            var methodSignature = myTypeUsageHasher.HashMethodSignature(memberReference.Signature);
+            var methodSignatureHash = GetSignatureTypesHash(methodSignature);
             var methodTypeParametersCountHash = (ulong)methodSignature.GenericParameterCount;
 
             hash = LongHashCode.Combine(
@@ -663,7 +657,7 @@ public class AssemblyHasher
 
           case MemberReferenceKind.Field: // note: probably unreachable
           {
-            var fieldTypeHash = memberReference.DecodeFieldSignature(mySignatureHasher, genericContext: null);
+            var fieldTypeHash = myTypeUsageHasher.HashFieldSignature(memberReference.Signature);
 
             hash = LongHashCode.Combine(
               memberNameHash, fieldTypeHash, memberReferenceCustomAttributesHash);
@@ -682,12 +676,12 @@ public class AssemblyHasher
         var methodDefinition = myMetadataReader.GetMethodDefinition((MethodDefinitionHandle)handle);
 
         var methodNameHash = GetOrComputeStringHash(methodDefinition.Name);
-        var methodSignature = methodDefinition.DecodeSignature(mySignatureHasher, genericContext: null);
-        var methodSignatureHash = GetSignatureHash(methodSignature);
+
+        var methodSignature = myTypeUsageHasher.HashMethodSignature(methodDefinition.Signature);
+        var methodSignatureHash = GetSignatureTypesHash(methodSignature);
         var methodTypeParametersCountHash = (ulong)methodSignature.GenericParameterCount;
 
-        hash = LongHashCode.Combine(
-          methodNameHash, methodSignatureHash, methodTypeParametersCountHash);
+        hash = LongHashCode.Combine(methodNameHash, methodSignatureHash, methodTypeParametersCountHash);
         break;
       }
 
@@ -734,8 +728,8 @@ public class AssemblyHasher
       if (myHashes.TryGetValue(handle, out var hash)) return hash;
 
       var typeSpecification = myMetadataReader.GetTypeSpecification((TypeSpecificationHandle)handle);
+      var typeSpecificationHash = myTypeUsageHasher.HashType(typeSpecification.Signature);
 
-      var typeSpecificationHash = typeSpecification.DecodeSignature(mySignatureHasher, genericContext: null);
       var typeSpecificationCustomAttributesHash = ComputeCustomAttributesSurfaceHash(typeSpecification.GetCustomAttributes());
 
       hash = LongHashCode.Combine(typeSpecificationHash, typeSpecificationCustomAttributesHash);
@@ -801,104 +795,21 @@ public class AssemblyHasher
 
   private readonly struct TypeUsageHashProvider(AssemblyHasher assemblyHasher) : ITypeUsageHashProvider
   {
-    public ulong HashTypeDefinition(TypeDefinitionHandle handle, byte rawTypeKind)
+    public ulong HashTypeDefinition(TypeDefinitionHandle handle)
     {
       return assemblyHasher.GetOrComputeTypeUsageHash(handle);
     }
 
-    public ulong HashTypeReference(TypeReferenceHandle handle, byte rawTypeKind)
+    public ulong HashTypeReference(TypeReferenceHandle handle)
     {
       return assemblyHasher.GetOrComputeTypeReferenceHash(handle);
     }
   }
 
-  [Obsolete("To be removed")]
-  private class SignatureHasherOld(AssemblyHasher surfaceHash)
-    : ISignatureTypeProvider<ulong, object?>
-  {
-    protected readonly AssemblyHasher SurfaceHash = surfaceHash;
-
-    ulong ISimpleTypeProvider<ulong>.GetPrimitiveType(PrimitiveTypeCode typeCode)
-    {
-      return (ulong)typeCode; // use code itself as a hash
-    }
-
-    public virtual ulong GetTypeFromDefinition(MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind)
-    {
-      return SurfaceHash.GetOrComputeTypeUsageHash(handle);
-    }
-
-    public ulong GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind)
-    {
-      return SurfaceHash.GetOrComputeTypeReferenceHash(handle);
-    }
-
-    public ulong GetGenericInstantiation(ulong genericTypeHash, ImmutableArray<ulong> typeArgumentsHashes)
-    {
-      var combine = LongHashCode.Combine(typeArgumentsHashes);
-      return LongHashCode.Combine(genericTypeHash, combine);
-    }
-
-    public ulong GetSZArrayType(ulong elementTypeHash) => LongHashCode.Combine(elementTypeHash, 1);
-    public ulong GetByReferenceType(ulong elementTypeHash) => LongHashCode.Combine(elementTypeHash, 2);
-    public ulong GetPointerType(ulong elementTypeHash) => LongHashCode.Combine(elementTypeHash, 3);
-    public ulong GetPinnedType(ulong elementTypeHash) => LongHashCode.Combine(elementTypeHash, 4);
-
-    public ulong GetArrayType(ulong elementTypeHash, ArrayShape shape)
-    {
-      return LongHashCode.Combine(
-        elementTypeHash,
-        (ulong)shape.Rank,
-        HashCombine(shape.LowerBounds),
-        HashCombine(shape.Sizes));
-
-      ulong HashCombine(ImmutableArray<int> values)
-      {
-        var hash = LongHashCode.FnvOffset;
-
-        foreach (var value in values)
-        {
-          hash = LongHashCode.Combine(hash, (ulong)value);
-        }
-
-        return hash;
-      }
-    }
-
-    public ulong GetFunctionPointerType(MethodSignature<ulong> signature)
-    {
-      var returnTypeHash = signature.ReturnType;
-      var parameterTypesHash = LongHashCode.Combine(signature.ParameterTypes);
-      var genericParametersCountHash = (ulong)signature.GenericParameterCount;
-      var callingConventionHash = (ulong)signature.Header.CallingConvention;
-
-      return LongHashCode.Combine(
-        returnTypeHash, parameterTypesHash, genericParametersCountHash, callingConventionHash);
-    }
-
-    public ulong GetGenericMethodParameter(object? _, int index) => LongHashCode.Combine((ulong)index, 1000_000);
-    public ulong GetGenericTypeParameter(object? _, int index) => LongHashCode.Combine((ulong)index, 1000);
-
-    public ulong GetModifiedType(ulong modifierHash, ulong unmodifiedTypeHash, bool isRequired)
-    {
-      // `ref readonly` returns are encoded via T& modreq([InAttribute])
-      return LongHashCode.Combine(unmodifiedTypeHash, modifierHash, isRequired ? 42UL : 0UL);
-    }
-
-    public ulong GetTypeFromSpecification(
-      MetadataReader reader, object? genericContext, TypeSpecificationHandle handle, byte rawTypeKind)
-    {
-      throw new InvalidOperationException();
-    }
-  }
-
   [Pure]
-  private static ulong GetSignatureHash(MethodSignature<ulong> signature)
+  private static ulong GetSignatureTypesHash(MethodSignatureHash signature)
   {
-    var returnTypeHash = signature.ReturnType;
-    var parameterTypesHash = LongHashCode.Combine(signature.ParameterTypes);
-
-    return LongHashCode.Combine(parameterTypesHash, returnTypeHash);
+    return LongHashCode.Combine(signature.ParameterTypesHash, signature.ReturnTypeHash);
   }
 
   #endregion
@@ -906,7 +817,7 @@ public class AssemblyHasher
 
   private ulong GetOrComputeStructFieldTypeHash(FieldDefinition fieldDefinition)
   {
-    return myStructFieldTypeUsageHasher.DecodeFieldSignature(fieldDefinition.Signature);
+    return myStructFieldTypeUsageHasher.HashFieldSignature(fieldDefinition.Signature);
   }
 
   private ulong GetOrComputeNestedStructFieldTypesHash(TypeDefinitionHandle typeDefinitionHandle)
@@ -953,12 +864,12 @@ public class AssemblyHasher
 
   private readonly struct StructFieldTypeUsageHashProvider(AssemblyHasher assemblyHasher) : ITypeUsageHashProvider
   {
-    public ulong HashTypeDefinition(TypeDefinitionHandle handle, byte rawTypeKind)
+    public ulong HashTypeDefinition(TypeDefinitionHandle handle)
     {
       return assemblyHasher.GetOrComputeNestedStructFieldTypesHash(handle);
     }
 
-    public ulong HashTypeReference(TypeReferenceHandle handle, byte rawTypeKind)
+    public ulong HashTypeReference(TypeReferenceHandle handle)
     {
       return assemblyHasher.GetOrComputeTypeReferenceHash(handle);
     }
@@ -1251,7 +1162,7 @@ public enum AssemblyHasherOptions
   IncludeAllAttributes = 1 << 0
 }
 
-/// Thin abstraction to make list poolable
+/// Thin abstraction to make <see cref="List{T}"/> poolable
 file readonly struct SortedHashesSet : IDisposable
 {
   private readonly List<ulong> myHashes;
