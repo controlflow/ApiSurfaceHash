@@ -342,6 +342,15 @@ public class CompilationTests(RoslynCompiler compiler)
   }
 
   [Test]
+  public void TestConstructors()
+  {
+    AssertSurfaceEqual(
+      "public class C();",
+      "public class C { }", // implicit ctor
+      "public class C { public C() { } }");
+  }
+
+  [Test]
   public void TestFieldSignatures()
   {
     AssertMemberSurfaceEqual(
@@ -594,6 +603,10 @@ public class CompilationTests(RoslynCompiler compiler)
       AssertMemberSurfaceNotEqual(
         "public static void M() { }",
         "[System.Runtime.InteropServices.UnmanagedCallersOnly] public static void M() { }");
+
+      AssertMemberSurfaceNotEqual(
+        "public C() { }",
+        "[System.Diagnostics.CodeAnalysis.SetsRequiredMembers] public C() { }");
     }
   }
 
