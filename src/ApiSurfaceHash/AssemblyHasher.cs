@@ -6,8 +6,6 @@ using System.Reflection.PortableExecutable;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 
-// todo: typeof(T) in attribute can reference internal/private type, via string; how enum values are stored?
-// todo: check coverage
 // todo: test memory traffic
 // todo: do we need parallelism per assembly?
 
